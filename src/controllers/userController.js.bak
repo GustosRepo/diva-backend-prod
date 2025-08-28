@@ -1,0 +1,87 @@
+import { PrismaClient } from "@prisma/client";
+const prisma = new PrismaClient();
+
+// ✅ Fetch user shipping info
+export const getShippingInfo = async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true, address: true, city: true, zip: true, country: true },
+    });
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// ✅ Update user profile (name, address, city, zip, country)
+export const updateUserInfo = async (req, res) => {
+  const { id, name, email, address, city, zip, country } = req.body;
+
+  try {
+    console.log("🔹 Received profile update request for user:", id);
+
+    if (!id) {
+      console.error("❌ Missing user ID in request");
+      return res.status(400).json({ message: "User ID is required" });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id },
+      data: {
+        name: name || undefined, 
+        email: email || undefined, 
+        address: address || undefined, 
+        city: city || undefined, // 🔥 Ensure these get updated
+        zip: zip || undefined, 
+        country: country || undefined,
+        updatedAt: new Date(), // ✅ Make sure updatedAt changes
+      },
+    });
+
+    console.log("✅ Profile updated successfully:", updatedUser);
+    res.status(200).json({ message: "Profile updated", user: updatedUser });
+
+  } catch (error) {
+    console.error("❌ Error updating profile:", error);
+    res.status(500).json({ message: "Internal Server Error", error: error.message });
+  }
+};
+
+export const getUserInfo= async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    if (!userId) {
+      return res.status(400).json({ message: "User ID is required." });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        address: true,
+        city: true,
+        zip: true,
+        country: true,
+        points: true,
+        isAdmin: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    res.json(user);
+  } catch (error) {
+    console.error("❌ Error fetching user profile:", error);
+    res.status(500).json({ message: "Error fetching user profile", error: error.message });
+  }
+};

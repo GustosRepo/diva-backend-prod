@@ -1,0 +1,18 @@
+node_modules
+# Keep environment variables out of version control
+.env
+.DS_Store
+node_modules
+.env
+coverage
+.next
+.DS_Store
+node_modules
+.env
+coverage
+.next
+.DS_Store
+node_modules
+.env
+coverage
+.next

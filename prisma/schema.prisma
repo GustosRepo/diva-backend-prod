@@ -1,0 +1,1 @@
+// This file is no longer used. Prisma has been removed in favor of Supabase.
