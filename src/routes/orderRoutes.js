@@ -13,9 +13,23 @@ import {
   markOrderPaid,
   markOrderPickedUp,
   cancelExpiredPickupHolds,
+  uploadPaymentProof,
 } from "../controllers/orderController.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 import isAdminMiddleware from "../middleware/isAdminMiddleware.js";
+import multer from "multer";
+
+// Multer for payment proof uploads (10MB limit, images/pdf only)
+const proofStorage = multer.memoryStorage();
+const proofUpload = multer({
+  storage: proofStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = file.mimetype?.startsWith('image/') || file.mimetype === 'application/pdf';
+    if (!ok) return cb(new Error('Only images or PDF allowed'));
+    cb(null, true);
+  }
+});
 
 const router = express.Router();
 
@@ -36,6 +50,9 @@ router.post("/", authMiddleware, createOrder); // Create new order
 router.post("/pickup", authMiddleware, createPickupOrder);
 router.put("/admin/orders/:orderId", authMiddleware, isAdminMiddleware, updateOrderStatus);
 router.put("/:orderId/cancel", authMiddleware, cancelOrder); // Cancel order
+
+// Upload payment proof
+router.post("/:id/payment-proof", authMiddleware, proofUpload.single('file'), uploadPaymentProof);
 
 // Admin/ops helpers for pickup flow
 router.patch("/:id/mark-paid", authMiddleware, isAdminMiddleware, markOrderPaid);

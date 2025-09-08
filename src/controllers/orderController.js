@@ -300,6 +300,72 @@ export const createPickupOrder = async (req, res) => {
   }
 };
 
+// 🔹 Upload payment proof (image/pdf) for an order
+export const uploadPaymentProof = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = req.user || {};
+
+    // Validate order exists
+    const { data: order, error } = await supabase
+      .from("order")
+      .select("id, user_id, shipping_info")
+      .eq("id", id)
+      .single();
+    if (error || !order) return res.status(404).json({ message: "Order not found" });
+
+    // Check ownership or admin
+    const isOwner = String(order.user_id) === String(user.id || user.userId);
+    const isAdmin = (user.role === 'admin' || user.isAdmin === true);
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ message: "Not authorized to upload proof for this order" });
+    }
+
+    // Validate file from multer
+    const file = req.file;
+    if (!file) return res.status(400).json({ message: "file is required (image/* or application/pdf)" });
+
+    const bucket = process.env.SUPABASE_ORDERS_BUCKET || process.env.SUPABASE_BUCKET || 'orders';
+    const timestamp = Date.now();
+    const safeName = String(file.originalname || 'proof').replace(/[^a-zA-Z0-9_.-]/g, '_');
+    const path = `orders/${id}/${timestamp}_${safeName}`;
+
+    // Upload to Supabase Storage
+    const { error: upErr } = await supabase.storage
+      .from(bucket)
+      .upload(path, file.buffer, { contentType: file.mimetype, upsert: true });
+    if (upErr) {
+      console.error("❌ payment proof upload error:", upErr);
+      return res.status(500).json({ message: "Failed to upload file" });
+    }
+
+    // Public URL (assumes bucket public); fallback to signed URL
+    let publicUrl = supabase.storage.from(bucket).getPublicUrl(path)?.data?.publicUrl;
+    if (!publicUrl) {
+      try {
+        const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 7); // 7 days
+        publicUrl = signed?.signedUrl || null;
+      } catch (_) {}
+    }
+
+    const info = order.shipping_info || {};
+    info.payment_proof_url = publicUrl;
+    info.payment_proof_status = "submitted";
+    info.payment_proof_uploaded_at = new Date().toISOString();
+
+    const { error: updErr } = await supabase
+      .from("order")
+      .update({ shipping_info: info })
+      .eq("id", id);
+    if (updErr) return res.status(500).json({ message: "Failed to update order with proof URL" });
+
+    return res.status(201).json({ payment_proof_url: publicUrl });
+  } catch (e) {
+    console.error("❌ uploadPaymentProof error:", e);
+    return res.status(500).json({ message: "Failed to upload payment proof" });
+  }
+};
+
 // 🔹 Create a new order with validation
 // 🔹 Create a new order with validation
 export const createOrder = async (req, res) => {
@@ -643,6 +709,9 @@ export const cancelExpiredPickupHolds = async (_req, res) => {
     for (const o of orders || []) {
       const exp = o?.shipping_info?.pickup?.reservation_expires_at;
       if (!exp || exp > nowIso) continue; // not expired yet
+      // Skip if already marked paid
+      const payStatus = (o?.shipping_info?.payment_status || '').toLowerCase();
+      if (payStatus === 'paid') continue;
 
       // Restock items
       const { data: items } = await supabase
