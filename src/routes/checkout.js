@@ -34,7 +34,7 @@ const getUserFromToken = (req) => {
 
 router.post("/create-checkout-session", async (req, res) => {
   try {
-    console.log("🛠 Incoming Checkout Data:", req.body);
+    if (process.env.NODE_ENV !== 'production') console.log("🛠 Incoming Checkout Data:", req.body);
 
   const { items, shippingInfo, metadata: clientMetadata, shippoShipmentId, shippoRateId, isLocalPickup, isLocal } = req.body;
     const user = getUserFromToken(req);
@@ -58,7 +58,7 @@ router.post("/create-checkout-session", async (req, res) => {
             const activePromo = existing.data.find(p => p.code === couponCode && p.active && !p.restrictions?.ends_at);
             if (activePromo) {
               promoCodeId = activePromo.id;
-              console.log("🎟️ Reusing active promo code:", couponCode);
+              if (process.env.NODE_ENV !== 'production') console.log("🎟️ Reusing active promo code:", couponCode);
             } else {
               const coupon = await stripe.coupons.create({ percent_off: 10, duration: "once" });
               const promo = await stripe.promotionCodes.create({ code: couponCode, coupon: coupon.id, max_redemptions: 1 });
@@ -68,11 +68,11 @@ router.post("/create-checkout-session", async (req, res) => {
                 .update({ points: (dbUser.points || 0) - 100 })
                 .eq("id", user.userId);
               if (updateError) throw updateError;
-              console.log("🎁 Created new promo & deducted 100 points:", couponCode);
+              if (process.env.NODE_ENV !== 'production') console.log("🎁 Created new promo & deducted 100 points:", couponCode);
             }
         }
       } catch (e) {
-        console.error("❌ Promo code generation error (non-fatal):", e?.message || e);
+        if (process.env.NODE_ENV !== 'production') console.error("❌ Promo code generation error (non-fatal):", e?.message || e);
       }
     }
 
@@ -126,7 +126,7 @@ router.post("/create-checkout-session", async (req, res) => {
             currency: rate.currency || "USD",
           };
         } catch (e) {
-          console.error("❌ Failed to validate provided Shippo shipment/rate:", e?.message || e);
+          if (process.env.NODE_ENV !== 'production') console.error("❌ Failed to validate provided Shippo shipment/rate:", e?.message || e);
           return res.status(400).json({ message: "Invalid Shippo shipment/rate" });
         }
       }
@@ -138,7 +138,7 @@ router.post("/create-checkout-session", async (req, res) => {
           selectedRate = cheapest;
           effectiveShipmentId = shipment?.objectId;
         } catch (e) {
-          console.error("❌ Shippo rate error:", e?.message || e);
+          if (process.env.NODE_ENV !== 'production') console.error("❌ Shippo rate error:", e?.message || e);
           return res.status(502).json({ message: "Failed to obtain shipping rate" });
         }
       }
@@ -223,31 +223,31 @@ router.post("/create-checkout-session", async (req, res) => {
           ...baseSessionPayload,
           discounts: [{ promotion_code: promoCodeId }],
         });
-        console.log("✅ Stripe session created with promo:", session.id);
+        if (process.env.NODE_ENV !== 'production') console.log("✅ Stripe session created with promo:", session.id);
       } catch (err) {
         const code = err?.code || err?.raw?.code;
         if (code === "coupon_expired" || code === "resource_missing" || code === "invalid_request_error") {
-          console.warn(`⚠️ Promo code invalid (${code}). Retrying without discount.`);
+          if (process.env.NODE_ENV !== 'production') console.warn(`⚠️ Promo code invalid (${code}). Retrying without discount.`);
           try {
             session = await stripe.checkout.sessions.create(baseSessionPayload);
-            console.log("✅ Stripe session created without promo after retry:", session.id);
+            if (process.env.NODE_ENV !== 'production') console.log("✅ Stripe session created without promo after retry:", session.id);
           } catch (retryErr) {
-            console.error("❌ Stripe retry failed:", retryErr);
+            if (process.env.NODE_ENV !== 'production') console.error("❌ Stripe retry failed:", retryErr);
             return res.status(500).json({ message: "Failed to create checkout session", error: retryErr.message });
           }
         } else {
-          console.error("❌ Stripe session creation failed (non-coupon error):", err);
+          if (process.env.NODE_ENV !== 'production') console.error("❌ Stripe session creation failed (non-coupon error):", err);
           return res.status(500).json({ message: "Failed to create checkout session", error: err.message });
         }
       }
     } else {
       session = await stripe.checkout.sessions.create(baseSessionPayload);
-      console.log("✅ Stripe session created (no promo):", session.id);
+      if (process.env.NODE_ENV !== 'production') console.log("✅ Stripe session created (no promo):", session.id);
     }
 
     return res.json({ url: session.url, shipping: selectedRate, shippoShipmentId: effectiveShipmentId });
   } catch (error) {
-    console.error("❌ Stripe Checkout Error (outer catch):", error);
+    if (process.env.NODE_ENV !== 'production') console.error("❌ Stripe Checkout Error (outer catch):", error);
     return res.status(500).json({ message: "Failed to create checkout session", error: error.message });
   }
 });
@@ -258,6 +258,13 @@ router.post("/shippo-rate", async (req, res) => {
   if (!shippingInfo || !items) {
     return res.status(400).json({ message: "shippingInfo and items required" });
   }
+  // If subtotal is 0, short-circuit with zero shipping
+  try {
+    const subtotal = (Array.isArray(items) ? items : []).reduce((acc, it) => acc + Number(it.price || 0) * Number(it.quantity || 1), 0);
+    if (!Number.isFinite(subtotal) || subtotal <= 0) {
+      return res.json({ success: true, shipping_fee: 0, shipping_fee_cents: 0, rate: { id: "free-0", provider: "No items", service: "N/A", amount: 0, currency: "USD" }, rates: [] });
+    }
+  } catch (_) { /* ignore and proceed to Shippo */ }
   try {
     const start = Date.now();
     const { cheapest, rates } = await getCheapestShippoRate({ shippingInfo, items });
@@ -271,7 +278,7 @@ router.post("/shippo-rate", async (req, res) => {
       elapsed_ms: ms,
     });
   } catch (e) {
-    console.error("❌ /shippo-rate error:", e?.message || e);
+    if (process.env.NODE_ENV !== 'production') console.error("❌ /shippo-rate error:", e?.message || e);
     return res.status(502).json({ message: "Failed to obtain Shippo rates", error: e?.message || String(e) });
   }
 });
@@ -295,7 +302,7 @@ router.post("/goshipoo-rate", async (req, res) => {
       elapsed_ms: ms,
     });
   } catch (e) {
-    console.error("❌ /goshipoo-rate error:", e?.message || e);
+    if (process.env.NODE_ENV !== 'production') console.error("❌ /goshipoo-rate error:", e?.message || e);
     return res.status(502).json({ message: "Failed to obtain Shippo rates", error: e?.message || String(e) });
   }
 });
@@ -312,10 +319,12 @@ router.post("/finalize-points", async (req, res) => {
     const usedDiscount = appliedPromoCode === expectedPromoCode;
     const pointsEarned = Math.floor(totalAmount);
 
-    console.log("🔍 Finalizing points...");
-    console.log("👤 userId:", userId);
-    console.log("💸 totalAmount:", totalAmount);
-    console.log("💰 pointsEarned:", pointsEarned);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log("🔍 Finalizing points...");
+      console.log("👤 userId:", userId);
+      console.log("💸 totalAmount:", totalAmount);
+      console.log("💰 pointsEarned:", pointsEarned);
+    }
 
     if (!userId || userId === "guest") {
       return res.status(200).json({ message: "Guest checkout – no points updated." });
@@ -339,7 +348,7 @@ router.post("/finalize-points", async (req, res) => {
 
     res.json({ success: true, newPoints, promoCode: usedDiscount ? expectedPromoCode : null });
   } catch (err) {
-    console.error("❌ Error finalizing points:", err);
+    if (process.env.NODE_ENV !== 'production') console.error("❌ Error finalizing points:", err);
     res.status(500).json({ message: "Failed to finalize points" });
   }
 });
@@ -360,7 +369,7 @@ router.post("/shipping/create-shipment", async (req, res) => {
       rates,
     });
   } catch (e) {
-    console.error("❌ /shipping/create-shipment error:", e?.message || e);
+    if (process.env.NODE_ENV !== 'production') console.error("❌ /shipping/create-shipment error:", e?.message || e);
     return res.status(502).json({ message: "Failed to create shipment", error: e?.message || String(e) });
   }
 });

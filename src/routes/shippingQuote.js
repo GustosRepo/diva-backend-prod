@@ -179,7 +179,7 @@ export async function getCheapestShippoRate({ shippingInfo = {}, items = [] } = 
     32
   );
 
-  console.log("📦 rate-debug", {
+  if (process.env.NODE_ENV !== 'production') console.log("📦 rate-debug", {
     items: enrichedItems.map(i => ({
       id: i.id ?? i.productId ?? i.product_id,
       qty: Number(i.quantity || 1),

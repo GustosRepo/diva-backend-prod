@@ -7,7 +7,9 @@ const router = express.Router();
 // Raw body is applied in server.js for this mount path.
 // Keeping it here too can break Stripe signature verification.
 router.post("/", (req, res, next) => {
-	console.log("[WEBHOOK ROUTE HIT] /api/webhooks/stripe (POST) content-type=", req.headers['content-type']);
+	if (process.env.NODE_ENV !== 'production') {
+		console.log("[WEBHOOK ROUTE HIT] /api/webhooks/stripe (POST) content-type=", req.headers['content-type']);
+	}
 	return stripeWebhookHandler(req, res, next);
 });
 

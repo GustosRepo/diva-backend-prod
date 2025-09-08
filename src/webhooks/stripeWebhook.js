@@ -10,7 +10,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2022-11-
 
 // ✅ Stripe Webhook Handler
 export const stripeWebhookHandler = async (req, res) => {
-  console.log("🚀 Incoming Stripe Webhook");
+  if (process.env.NODE_ENV !== 'production') console.log("🚀 Incoming Stripe Webhook");
 
   // --- Signature verify (expects express.raw on this route) ---
   const sig =
@@ -24,37 +24,39 @@ export const stripeWebhookHandler = async (req, res) => {
   try {
     if (sig && endpointSecret) {
       event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
-      console.log("✅ Stripe signature verified:", event.type);
+      if (process.env.NODE_ENV !== 'production') console.log("✅ Stripe signature verified:", event.type);
     } else {
       // Dev-only fallback
       const raw = Buffer.isBuffer(req.body)
         ? req.body.toString("utf8")
         : JSON.stringify(req.body || {});
       event = JSON.parse(raw);
-      console.warn("⚠️ Using unverified event payload (dev fallback). Event type:", event?.type);
+      if (process.env.NODE_ENV !== 'production') console.warn("⚠️ Using unverified event payload (dev fallback). Event type:", event?.type);
     }
   } catch (error) {
-    console.error("❌ Webhook signature verification failed:", error?.message || error);
+    if (process.env.NODE_ENV !== 'production') console.error("❌ Webhook signature verification failed:", error?.message || error);
     return res.status(400).send(`Webhook Error: ${error?.message || error}`);
   }
 
   try {
     if (event.type === "checkout.session.completed") {
       const session = event.data.object || event.object || {};
-  console.log("📝 Raw session.id:", session.id, "has metadata?", !!session.metadata);
-  console.log("📝 session.metadata:", session.metadata);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log("📝 Raw session.id:", session.id, "has metadata?", !!session.metadata);
+    console.log("📝 session.metadata:", session.metadata);
+  }
   // Preview raw body length for signature context
-  console.log("📝 Raw body length:", Buffer.isBuffer(req.body) ? req.body.length : (typeof req.body === 'string' ? req.body.length : 'n/a'));
+  if (process.env.NODE_ENV !== 'production') console.log("📝 Raw body length:", Buffer.isBuffer(req.body) ? req.body.length : (typeof req.body === 'string' ? req.body.length : 'n/a'));
       const inserted = await processCheckoutSession(session); // ← no res passed
 
-      console.log("📦 Webhook metadata received:", session?.metadata || null);
+      if (process.env.NODE_ENV !== 'production') console.log("📦 Webhook metadata received:", session?.metadata || null);
       return res.status(200).json({ received: true, order_id: inserted?.id || null });
     }
 
-    console.log(`ℹ️ Ignoring event type: ${event.type}`);
+    if (process.env.NODE_ENV !== 'production') console.log(`ℹ️ Ignoring event type: ${event.type}`);
     return res.status(200).json({ received: true });
   } catch (error) {
-    console.error("❌ Error handling Stripe event:", error?.message || error);
+    if (process.env.NODE_ENV !== 'production') console.error("❌ Error handling Stripe event:", error?.message || error);
     return res.status(500).send("Internal Server Error");
   }
 };
@@ -65,11 +67,11 @@ const parseItemsFromSession = async (session) => {
   // 1) Prefer metadata.items (your checkout code sends it)
   try {
     const rawItems = session?.metadata?.items;
-  console.log("🔍 parseItemsFromSession: raw metadata.items =", rawItems);
+  if (process.env.NODE_ENV !== 'production') console.log("🔍 parseItemsFromSession: raw metadata.items =", rawItems);
     if (rawItems) {
       const parsed = typeof rawItems === "string" ? JSON.parse(rawItems) : rawItems;
       if (Array.isArray(parsed)) {
-    console.log("🔍 Parsed metadata.items array length:", parsed.length);
+    if (process.env.NODE_ENV !== 'production') console.log("🔍 Parsed metadata.items array length:", parsed.length);
         // Support compact form {id,q,p}
         return parsed.map(it => ({
           id: it.id,
@@ -79,7 +81,7 @@ const parseItemsFromSession = async (session) => {
       }
     }
   } catch (e) {
-    console.warn("⚠️ Could not parse metadata.items:", e);
+    if (process.env.NODE_ENV !== 'production') console.warn("⚠️ Could not parse metadata.items:", e);
   }
 
   // 2) Fallback to Stripe line items (will only map if you stored an internal id in price.product.metadata.internal_id)
@@ -89,7 +91,7 @@ const parseItemsFromSession = async (session) => {
         limit: 100,
         expand: ["data.price.product"],
       });
-  console.log("🔍 Stripe line items fetched count:", li.data?.length || 0);
+  if (process.env.NODE_ENV !== 'production') console.log("🔍 Stripe line items fetched count:", li.data?.length || 0);
       return li.data
         .map((row) => {
           const internalId = row?.price?.product?.metadata?.internal_id;
@@ -107,7 +109,7 @@ const parseItemsFromSession = async (session) => {
         .filter(Boolean);
     }
   } catch (e) {
-    console.warn("⚠️ Could not fetch Stripe line items:", e);
+    if (process.env.NODE_ENV !== 'production') console.warn("⚠️ Could not fetch Stripe line items:", e);
   }
 
   return [];
@@ -186,7 +188,7 @@ const generateTrackingCode = () =>
  * NOTE: Only inserts columns that actually exist in your table.
  */
 const processCheckoutSession = async (session) => {
-  console.log("📦 Processing session:", session?.id);
+  if (process.env.NODE_ENV !== 'production') console.log("📦 Processing session:", session?.id);
 
   // 🔁 Idempotency: if an order already exists for this Stripe session, return it
   if (session?.id) {
@@ -197,11 +199,11 @@ const processCheckoutSession = async (session) => {
         .eq("stripe_session_id", session.id)
         .limit(1);
       if (!existingErr && Array.isArray(existingRows) && existingRows.length) {
-        console.log("🛑 Duplicate webhook: order already exists for session", session.id, "order id", existingRows[0].id);
+        if (process.env.NODE_ENV !== 'production') console.log("🛑 Duplicate webhook: order already exists for session", session.id, "order id", existingRows[0].id);
         return existingRows[0];
       }
     } catch (e) {
-      console.warn("⚠️ Idempotency check failed (continuing):", e?.message || e);
+      if (process.env.NODE_ENV !== 'production') console.warn("⚠️ Idempotency check failed (continuing):", e?.message || e);
     }
   }
 
@@ -263,7 +265,7 @@ const processCheckoutSession = async (session) => {
       ? session.amount_total / 100
       : Number((subtotal + tax_amount + shipping_fee).toFixed(2));
 
-  console.log("💵 amount breakdown:", {
+  if (process.env.NODE_ENV !== 'production') console.log("💵 amount breakdown:", {
     amount_subtotal: session?.amount_subtotal,
     amount_total: session?.amount_total,
     amount_discount: session?.total_details?.amount_discount,
@@ -349,7 +351,7 @@ const processCheckoutSession = async (session) => {
     ...flatAddress,
   };
 
-  console.log(
+  if (process.env.NODE_ENV !== 'production') console.log(
     `[Supabase] URL: ${process.env.SUPABASE_URL} | inserting order with fields: ${Object.keys(
       payload
     ).join(", ")}`
@@ -366,12 +368,12 @@ const processCheckoutSession = async (session) => {
     throw new Error("DB insert failed");
   }
 
-  console.log("✅ Order inserted:", inserted?.id);
+  if (process.env.NODE_ENV !== 'production') console.log("✅ Order inserted:", inserted?.id);
 
   // ----- Optional: create order_items + decrement stock -----
   const items = await parseItemsFromSession(session);
   if (Array.isArray(items) && items.length > 0) {
-    console.log("🛒 Creating order_items, count:", items.length);
+    if (process.env.NODE_ENV !== 'production') console.log("🛒 Creating order_items, count:", items.length);
     const orderItemsPayload = items.map((it) => ({
       order_id: inserted.id,
       product_id: it.id,
@@ -381,7 +383,7 @@ const processCheckoutSession = async (session) => {
 
     const { error: orderItemError } = await supabase.from("order_item").insert(orderItemsPayload);
     if (orderItemError) {
-      console.error("❌ order_item insert error:", orderItemError);
+      if (process.env.NODE_ENV !== 'production') console.error("❌ order_item insert error:", orderItemError);
       // rollback
       await supabase.from("order").delete().eq("id", inserted.id);
       throw new Error("Failed to create order items");
@@ -391,19 +393,19 @@ const processCheckoutSession = async (session) => {
     for (const it of items) {
       try {
         const qty = Number(it.quantity || 1);
-  console.log("🛠 Attempting decrement for product", it.id, "qty", qty);
+  if (process.env.NODE_ENV !== 'production') console.log("🛠 Attempting decrement for product", it.id, "qty", qty);
         const { error: decErr } = await decrementProductQuantity(it.id, qty);
         if (decErr) {
           console.warn("⚠️ decrementProductQuantity error for", it.id, decErr);
         } else {
-          console.log(`✅ Decremented stock for product ${it.id} by ${qty}`);
+          if (process.env.NODE_ENV !== 'production') console.log(`✅ Decremented stock for product ${it.id} by ${qty}`);
         }
       } catch (err) {
-        console.error("❌ Exception decrementing product", it.id, err);
+        if (process.env.NODE_ENV !== 'production') console.error("❌ Exception decrementing product", it.id, err);
       }
     }
   } else {
-    console.log("ℹ️ No items to create for order_items (metadata.items missing).");
+    if (process.env.NODE_ENV !== 'production') console.log("ℹ️ No items to create for order_items (metadata.items missing).");
   }
 
   // After successful order insert
@@ -413,9 +415,9 @@ const processCheckoutSession = async (session) => {
       const subject = "Your Diva Nails Order Confirmation";
       const htmlContent = `<p>Thank you for your order 💅!<br>Order ID: <b>${inserted.id}</b><br>Total: $${inserted.total_amount?.toFixed(2) || "N/A"}</p>`;
       await sendEmail(inserted.email, subject, htmlContent);
-      console.log("✅ Order confirmation email sent to", inserted.email);
+      if (process.env.NODE_ENV !== 'production') console.log("✅ Order confirmation email sent to", inserted.email);
     } catch (err) {
-      console.error("❌ Failed to send order confirmation email:", err);
+      if (process.env.NODE_ENV !== 'production') console.error("❌ Failed to send order confirmation email:", err);
     }
     // Send notification email to admin
     try {
@@ -423,9 +425,9 @@ const processCheckoutSession = async (session) => {
       const subject = "New Order Placed (Stripe Checkout)";
       const htmlContent = `<p>A new order has been placed via Stripe Checkout.<br>Order ID: <b>${inserted.id}</b><br>Customer: ${inserted.email}<br>Total: $${inserted.total_amount?.toFixed(2) || "N/A"}</p>`;
       await sendEmail(adminEmail, subject, htmlContent);
-      console.log("✅ Admin notified of new Stripe order at", adminEmail);
+      if (process.env.NODE_ENV !== 'production') console.log("✅ Admin notified of new Stripe order at", adminEmail);
     } catch (err) {
-      console.error("❌ Failed to send admin new Stripe order notification:", err);
+      if (process.env.NODE_ENV !== 'production') console.error("❌ Failed to send admin new Stripe order notification:", err);
     }
   }
 

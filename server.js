@@ -15,11 +15,13 @@ const app = express();
 // trust proxy so req.ip and secure cookies work correctly.
 app.set("trust proxy", true);
 
-// Diagnostic request logger (temporary) – logs every incoming request
-app.use((req, _res, next) => {
-  console.log(`[REQ] ${req.method} ${req.originalUrl}`);
-  next();
-});
+// Diagnostic request logger (dev only)
+if (process.env.NODE_ENV !== "production") {
+  app.use((req, _res, next) => {
+    console.log(`[REQ] ${req.method} ${req.originalUrl}`);
+    next();
+  });
+}
 
 // 🛑 RAW BODY MIDDLEWARE FIRST — broaden type in case of content-type variance
 app.use("/api/webhooks/stripe", express.raw({ type: () => true }), webhookRoutes);

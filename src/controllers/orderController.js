@@ -134,6 +134,172 @@ export const getMyOrders = async (req, res) => {
   }
 };
 
+// 🔹 Create Local Pickup Order (Pay on Pickup)
+export const createPickupOrder = async (req, res) => {
+  try {
+    const authUser = req.user || {};
+    const userId = authUser.id || authUser.userId;
+
+    const { items, customer, notes } = req.body || {};
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "items required" });
+    }
+
+    // Enforce max 2 open reservations per user
+    const { data: existingReservations, error: existingErr } = await supabase
+      .from("order")
+      .select("id, status, shipping_info")
+      .eq("user_id", userId)
+      .contains("shipping_info", { shipping_method: "local_pickup" });
+    if (existingErr) {
+      console.warn("⚠️ Failed to check existing reservations:", existingErr?.message || existingErr);
+    } else {
+      const openCount = (existingReservations || []).filter((o) => {
+        const st = (o.status || '').toLowerCase();
+        return st === 'awaiting_pickup' || st === 'pending';
+      }).length;
+      if (openCount >= 2) {
+        return res.status(429).json({ message: "Too many active pickup holds. Please complete or cancel an existing hold before creating a new one." });
+      }
+    }
+
+    // Fetch authoritative product info
+    const productIds = items.map((it) => it.id || it.product_id).filter(Boolean);
+    if (productIds.length !== items.length) {
+      return res.status(400).json({ message: "Each item must include an id" });
+    }
+    const { data: products, error: prodErr } = await supabase
+      .from("product")
+      .select("id, title, price, quantity, brand_segment")
+      .in("id", productIds);
+    if (prodErr) throw prodErr;
+    if (!products || products.length !== productIds.length) {
+      return res.status(400).json({ message: "One or more products not found" });
+    }
+
+    // Map product by id for quick lookup
+    const productMap = new Map(products.map((p) => [p.id, p]));
+
+    // Validate quantities and compute subtotal from authoritative prices
+    let subtotal = 0;
+    for (const it of items) {
+      const pid = it.id || it.product_id;
+      const qty = Number(it.quantity || 1);
+      if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ message: "Invalid quantity" });
+      const prod = productMap.get(pid);
+      if (!prod) return res.status(400).json({ message: `Product ${pid} not found` });
+      const available = Number(prod.quantity || 0);
+      if (available < qty) {
+        return res.status(409).json({ message: `Insufficient stock for ${prod.title}`, product_id: pid, available });
+      }
+      subtotal += Number(prod.price) * qty;
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000); // 48h
+
+    // Build shipping_info JSON to hold pickup-specific fields without DB migration
+    const shippingInfo = {
+      shipping_method: "local_pickup",
+      payment_method: "pay_on_pickup",
+      payment_status: "unpaid",
+      taxes: 0,
+      notes: notes || null,
+      pickup: {
+        reservation_expires_at: expiresAt.toISOString(),
+        window_hours: "8am–8pm",
+        instructions: "Reserved 48h. DM/email to coordinate pickup time/location.",
+        contact_email: process.env.ADMIN_EMAIL || "admin@thedivafactory.com",
+      },
+      customer: customer || null,
+    };
+
+    // Insert order
+    const orderInsert = {
+      user_id: userId,
+      email: customer?.email || authUser.email || null,
+      total_amount: Math.max(0, Number(subtotal)),
+      status: "awaiting_pickup",
+      tracking_code: "Pickup",
+      shipping_info: shippingInfo,
+      points_used: 0,
+    };
+    const { data: newOrder, error: orderErr } = await supabase
+      .from("order")
+      .insert([orderInsert])
+      .select()
+      .single();
+    if (orderErr) {
+      console.error("❌ Pickup order insert failed:", orderErr);
+      return res.status(500).json({ message: "Failed to create pickup order" });
+    }
+
+    // Insert order items with unit price snapshot
+    const orderItemsPayload = items.map((it) => {
+      const pid = it.id || it.product_id;
+      const prod = productMap.get(pid);
+      const qty = Number(it.quantity || 1);
+      return {
+        order_id: newOrder.id,
+        product_id: pid,
+        quantity: qty,
+        price: Number(prod.price), // snapshot per unit
+        product_brand_segment: (prod.brand_segment || '').toLowerCase() || null,
+      };
+    });
+    const { error: itemsErr } = await supabase.from("order_item").insert(orderItemsPayload);
+    if (itemsErr) {
+      console.error("❌ Failed to insert order items for pickup:", itemsErr);
+      // Best-effort rollback of order
+      try { await supabase.from("order").delete().eq("id", newOrder.id); } catch (e) {}
+      return res.status(500).json({ message: "Failed to create pickup order items" });
+    }
+
+    // Decrement inventory immediately (Option A)
+    for (const it of items) {
+      const pid = it.id || it.product_id;
+      const qty = Number(it.quantity || 1);
+      const { error: decErr } = await decrementProductQuantity(pid, qty);
+      if (decErr) {
+        console.warn("⚠️ Inventory decrement failed for", pid, decErr);
+      }
+    }
+
+    // Send confirmation email to customer
+    try {
+      const to = orderInsert.email;
+      if (to) {
+        const subject = "Your Pickup Order is Reserved (48h)";
+        const html = `
+          <div style="font-family: Arial, sans-serif; padding:16px">
+            <h2 style="color:#d63384">Local Pickup Reserved</h2>
+            <p>Order <b>${newOrder.id}</b> is reserved for <b>48 hours</b>.</p>
+            <p>Pickup hours: <b>8am–8pm</b>. We will coordinate time/location — reply to this email or contact <a href="mailto:${shippingInfo.pickup.contact_email}">${shippingInfo.pickup.contact_email}</a>.</p>
+            <p>Total due at pickup: <b>$${orderInsert.total_amount.toFixed(2)}</b></p>
+            <p>Reservation expires: <b>${expiresAt.toISOString()}</b></p>
+          </div>`;
+        sendEmailNonBlocking(to, subject, html);
+      }
+      // Notify admin
+      const aSub = `New Local Pickup Hold: ${newOrder.id}`;
+      const aHtml = `<p>Pickup order <b>${newOrder.id}</b> created. Amount due $${orderInsert.total_amount.toFixed(2)}. Expires ${expiresAt.toISOString()}.</p>`;
+      sendEmailNonBlocking(ADMIN_EMAIL, aSub, aHtml);
+    } catch (e) {
+      console.warn("⚠️ Pickup email send warning:", e?.message || e);
+    }
+
+    return res.status(201).json({
+      order_id: newOrder.id,
+      status: "awaiting_pickup",
+      reservation_expires_at: expiresAt.toISOString(),
+    });
+  } catch (err) {
+    console.error("❌ createPickupOrder error:", err);
+    return res.status(500).json({ message: "Failed to create pickup order", error: err?.message || String(err) });
+  }
+};
+
 // 🔹 Create a new order with validation
 // 🔹 Create a new order with validation
 export const createOrder = async (req, res) => {
@@ -413,6 +579,96 @@ export const updateOrderStatus = async (req, res) => {
   } catch (error) {
     console.error("❌ Error updating order:", error);
     res.status(500).json({ message: "Error updating order", error: error.message });
+  }
+};
+
+// 🔹 Admin: mark order paid
+export const markOrderPaid = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: order, error } = await supabase
+      .from("order")
+      .select("id, shipping_info")
+      .eq("id", id)
+      .single();
+    if (error || !order) return res.status(404).json({ message: "Order not found" });
+    const info = order.shipping_info || {};
+    info.payment_status = "paid";
+    const { data: updated, error: updErr } = await supabase
+      .from("order")
+      .update({ shipping_info: info })
+      .eq("id", id)
+      .select()
+      .single();
+    if (updErr) throw updErr;
+    return res.json({ success: true, order_id: updated.id, payment_status: updated.shipping_info?.payment_status || "paid" });
+  } catch (e) {
+    console.error("❌ markOrderPaid error:", e);
+    return res.status(500).json({ message: "Failed to mark order paid" });
+  }
+};
+
+// 🔹 Admin: mark order picked up
+export const markOrderPickedUp = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: updated, error } = await supabase
+      .from("order")
+      .update({ status: "picked_up" })
+      .eq("id", id)
+      .select()
+      .single();
+    if (error || !updated) return res.status(404).json({ message: "Order not found" });
+    return res.json({ success: true, order_id: updated.id, status: updated.status });
+  } catch (e) {
+    console.error("❌ markOrderPickedUp error:", e);
+    return res.status(500).json({ message: "Failed to mark order picked up" });
+  }
+};
+
+// 🔹 Admin: cancel expired local pickup holds and restock
+export const cancelExpiredPickupHolds = async (_req, res) => {
+  try {
+    const nowIso = new Date().toISOString();
+    // Fetch candidate orders
+    const { data: orders, error } = await supabase
+      .from("order")
+      .select("id, status, shipping_info")
+      .contains("shipping_info", { shipping_method: "local_pickup" })
+      .in("status", ["awaiting_pickup"]) // only holds
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+
+    let processed = 0, restocked = 0;
+    for (const o of orders || []) {
+      const exp = o?.shipping_info?.pickup?.reservation_expires_at;
+      if (!exp || exp > nowIso) continue; // not expired yet
+
+      // Restock items
+      const { data: items } = await supabase
+        .from("order_item")
+        .select("product_id, quantity")
+        .eq("order_id", o.id);
+      if (Array.isArray(items)) {
+        for (const it of items) {
+          const { error: incErr } = await incrementProductQuantity(it.product_id, it.quantity);
+          if (!incErr) restocked++;
+        }
+      }
+
+      // Cancel order and flag in shipping_info
+      const info = { ...(o.shipping_info || {}) };
+      info.pickup = { ...(info.pickup || {}), expired_at: nowIso };
+      await supabase
+        .from("order")
+        .update({ status: "canceled", shipping_info: info })
+        .eq("id", o.id);
+      processed++;
+    }
+    return res.json({ success: true, processed, restocked });
+  } catch (e) {
+    console.error("❌ cancelExpiredPickupHolds error:", e);
+    return res.status(500).json({ message: "Failed to cancel expired pickup holds" });
   }
 };
 // 🔹 Delete order (Admin Only)
