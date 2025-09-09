@@ -36,7 +36,17 @@ export const registerUser = async (req, res) => {
       { expiresIn: "7d" }
     );
 
+    // Set HttpOnly auth cookie so Next.js middleware and backend can read it
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
     res.status(201).json({
+      ok: true,
       token,
       user: { id: newUser.id, name: newUser.name, email: newUser.email, role: newUser.role },
     });
@@ -74,17 +84,27 @@ export const loginUser = async (req, res) => {
     const token = jwt.sign(
       { userId: user.id, role: user.role, isAdmin: user.role === "admin" },
       JWT_SECRET,
-      { expiresIn: "1h" }
+      { expiresIn: "7d" }
     );
 
+    // Set HttpOnly auth cookie so Next.js middleware and backend can read it
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
     res.status(200).json({
+      ok: true,
       token,
       user: {
         id: user.id,
         name: user.name,
         email: user.email,
         role: user.role,
-        isAdmin: user.role === "admin"
+        isAdmin: user.role === "admin",
       },
     });
   } catch (error) {

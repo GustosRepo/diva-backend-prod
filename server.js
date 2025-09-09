@@ -5,6 +5,7 @@ dotenv.config();
 import express from "express";
 import cors from "cors";
 import path from "path";
+import cookieParser from "cookie-parser";
 
 // ✅ Must be imported first to mount BEFORE body parsing
 import webhookRoutes from "./src/routes/webhookRoutes.js";
@@ -70,6 +71,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 // Explicitly handle preflight for all routes
 app.options("*", cors(corsOptions));
+app.use(cookieParser());
 
 app.use(express.json()); // This parses body — cannot go above webhook!
 app.use(express.urlencoded({ extended: true }));
