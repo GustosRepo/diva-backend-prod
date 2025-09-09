@@ -27,9 +27,50 @@ if (process.env.NODE_ENV !== "production") {
 app.use("/api/webhooks/stripe", express.raw({ type: () => true }), webhookRoutes);
 
 // ✅ Other middleware BELOW raw webhook handler
-// Allow the frontend origin to be configured via environment (Vercel URL).
+// Allow the frontend origin(s) to be configured via environment (comma-separated)
 const FRONTEND_ORIGIN = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:3000";
-app.use(cors({ origin: FRONTEND_ORIGIN, credentials: true }));
+const CORS_ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+
+// Known production/stage origins — add your domains here
+const defaultAllowedOrigins = [
+  FRONTEND_ORIGIN,
+  "https://divacms-frontend-prod.vercel.app",
+  "https://thedivefactory.com",
+  "https://www.thedivefactory.com",
+  "http://localhost:3000"
+].filter(Boolean);
+
+// Merge and de-dupe
+const allowedOrigins = Array.from(new Set([...defaultAllowedOrigins, ...CORS_ALLOWED_ORIGINS]));
+
+// Ensure caches don’t serve CORS for a different Origin
+app.use((req, res, next) => {
+  res.setHeader("Vary", "Origin");
+  next();
+});
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow non-browser tools (no Origin) like curl/Postman and same-origin SSR
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  credentials: true,
+  maxAge: 86400, // cache preflight for 1 day
+};
+
+app.use(cors(corsOptions));
+// Explicitly handle preflight for all routes
+app.options("*", cors(corsOptions));
+
 app.use(express.json()); // This parses body — cannot go above webhook!
 app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
