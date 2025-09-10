@@ -26,7 +26,7 @@ export const getAllCategories = async (req, res) => {
 export const addCategory = async (req, res) => {
   const { name, slug, brandSegment, brand_segment, description } = req.body;
   try {
-    if (req.user.role !== "admin") {
+    if (!req.user || req.user.role !== "admin") {
       return res.status(403).json({ message: "Access denied: Admins only" });
     }
     if (!name) return res.status(400).json({ message: 'name required' });
@@ -52,7 +52,7 @@ export const updateCategory = async (req, res) => {
   const { id } = req.params;
   const { name, slug, brandSegment, brand_segment, description } = req.body;
   try {
-    if (req.user.role !== "admin") {
+    if (!req.user || req.user.role !== "admin") {
       return res.status(403).json({ message: "Access denied: Admins only" });
     }
     const updateData = {
@@ -84,7 +84,7 @@ export const updateCategory = async (req, res) => {
 export const deleteCategory = async (req, res) => {
   const { id } = req.params;
   try {
-    if (req.user.role !== "admin") {
+    if (!req.user || req.user.role !== "admin") {
       return res.status(403).json({ message: "Access denied: Admins only" });
     }
     const { count, error: countError } = await supabase.from("product").select("id", { count: "exact", head: true }).eq("category_id", id);

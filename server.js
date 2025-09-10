@@ -83,7 +83,7 @@ app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 // ✅ Other routes
 import authRoutes from "./src/routes/auth.js";
 import orderRoutes from "./src/routes/orderRoutes.js";
-import categoryRoutes from "./src/routes/categoryRoute.js";
+import { publicRouter as categoryPublicRoute, adminRouter as categoryAdminRoute } from "./src/routes/categoryRoute.js";
 import productRoutes from "./src/routes/productRoutes.js";
 import adminRoutes from "./src/routes/adminRoutes.js";
 import userRoutes from "./src/routes/userRoutes.js";
@@ -95,7 +95,8 @@ import popupEventRoutes from "./src/routes/popupEventRoutes.js";
 
 app.use("/auth", authRoutes);
 app.use("/orders", orderRoutes);
-app.use("/categories", categoryRoutes);
+app.use("/categories", categoryPublicRoute);
+app.use("/admin/categories", categoryAdminRoute);
 app.use("/products", productRoutes);
 app.use("/admin", adminRoutes);
 app.use("/users", userRoutes);
