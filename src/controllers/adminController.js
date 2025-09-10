@@ -1,5 +1,24 @@
 import supabase from "../../supabaseClient.js";
 
+// Helpers for parsing form values
+const parseBool = (v, fallback = false) => {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "string") {
+    const t = v.trim().toLowerCase();
+    if (t === "true") return true;
+    if (t === "false") return false;
+    try { return JSON.parse(v); } catch { /* ignore */ }
+  }
+  return fallback;
+};
+
+const parseNum = (v, fallback = null) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const ALLOWED_BRANDS = new Set(["nails", "toys", "accessories"]);
+
 // 🔹 Get All Users (Admin Only)
 export const getAllUsers = async (req, res) => {
   try {
@@ -134,6 +153,96 @@ const mapAdminProductRow = (row) => {
   };
 };
 
+export const addProduct = async (req, res) => {
+  try {
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ message: "Access denied: Admins only" });
+    }
+
+    const file = req.file || null;
+    const {
+      title,
+      description = "",
+      price,
+      quantity = 0,
+      brandSegment,
+      brand_segment,
+      categorySlug,
+      category_slug,
+      bestSeller,
+      best_seller,
+      weightOz,
+      lengthIn,
+      widthIn,
+      heightIn,
+    } = req.body || {};
+
+    if (!title) return res.status(400).json({ message: "Title is required" });
+    const priceNum = parseNum(price);
+    if (priceNum === null) return res.status(400).json({ message: "Price must be a number" });
+    const qtyNum = parseNum(quantity, 0);
+
+    const effectiveBrand = (brandSegment || brand_segment || "").trim().toLowerCase();
+    if (effectiveBrand && !ALLOWED_BRANDS.has(effectiveBrand)) {
+      return res.status(400).json({ message: `brand_segment invalid. Allowed: ${Array.from(ALLOWED_BRANDS).join(", ")}` });
+    }
+    const effectiveCategory = (categorySlug || category_slug || "").trim().toLowerCase();
+    if (!effectiveCategory) return res.status(400).json({ message: "category_slug is required" });
+
+    // Image is required for now (aligns with your admin form)
+    if (!file) return res.status(400).json({ message: "Image file is required" });
+    if (!file.buffer) {
+      return res.status(500).json({ message: "Upload error: file buffer missing. Ensure multer.memoryStorage() is used." });
+    }
+
+    const bucket = process.env.SUPABASE_BUCKET || "divasDB/uploads";
+    const ext = (file.mimetype?.split("/")?.[1] || "jpg").toLowerCase();
+    const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+    const storagePath = filename;
+
+    const { error: upErr } = await supabase.storage
+      .from(bucket)
+      .upload(storagePath, file.buffer, { contentType: file.mimetype || "image/jpeg", upsert: false });
+    if (upErr) {
+      console.error("[addProduct] storage upload error:", upErr);
+      return res.status(500).json({ message: "Failed to upload image", details: upErr.message });
+    }
+    const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+    const imageUrl = pub?.publicUrl || null;
+
+    const row = {
+      title,
+      description,
+      price: priceNum,
+      quantity: qtyNum,
+      brand_segment: effectiveBrand,
+      category_slug: effectiveCategory,
+      best_seller: parseBool(bestSeller ?? best_seller, false),
+      image: imageUrl,
+      ...(parseNum(weightOz) != null ? { weight_oz: parseNum(weightOz) } : {}),
+      ...(parseNum(lengthIn) != null ? { length_in: parseNum(lengthIn) } : {}),
+      ...(parseNum(widthIn)  != null ? { width_in:  parseNum(widthIn)  } : {}),
+      ...(parseNum(heightIn) != null ? { height_in: parseNum(heightIn) } : {}),
+    };
+
+    const { data: inserted, error: insErr } = await supabase
+      .from("product")
+      .insert(row)
+      .select("*")
+      .single();
+
+    if (insErr) {
+      console.error("[addProduct] supabase insert error:", insErr);
+      return res.status(500).json({ message: "Insert failed", details: insErr.message });
+    }
+
+    return res.status(201).json(mapAdminProductRow(inserted));
+  } catch (error) {
+    console.error("[addProduct] unexpected error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
 export const getAllProducts = async (req, res) => {
   try {
     let {
@@ -235,7 +344,6 @@ export const updateProduct = async (req, res) => {
     categorySlug,
     category_slug,
   } = req.body;
-  const image = req.file ? `/uploads/${req.file.filename}` : undefined;
   try {
     if (req.user.role !== "admin") {
       return res.status(403).json({ message: "Access denied: Admins only" });
@@ -247,17 +355,35 @@ export const updateProduct = async (req, res) => {
       .trim()
       .toLowerCase();
 
+    let uploadedImageUrl;
+    if (req.file) {
+      if (!req.file.buffer) {
+        return res.status(500).json({ message: "Upload error: file buffer missing. Ensure multer.memoryStorage() is used." });
+      }
+      const bucket = process.env.SUPABASE_BUCKET || "divasDB/uploads";
+      const ext = (req.file.mimetype?.split("/")?.[1] || "jpg").toLowerCase();
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      const storagePath = filename;
+      const { error: upErr } = await supabase.storage
+        .from(bucket)
+        .upload(storagePath, req.file.buffer, { contentType: req.file.mimetype || "image/jpeg", upsert: false });
+      if (upErr) {
+        console.error("[updateProduct] storage upload error:", upErr);
+        return res.status(500).json({ message: "Failed to upload image", details: upErr.message });
+      }
+      const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+      uploadedImageUrl = pub?.publicUrl || undefined;
+    }
+
     const updateData = {
       ...(title != null ? { title } : {}),
       ...(description != null ? { description } : {}),
       ...(price != null ? { price: parseFloat(price) } : {}),
-      ...(bestSeller != null
-        ? { best_seller: bestSeller === "true" || bestSeller === true }
-        : {}),
+      ...(bestSeller != null ? { best_seller: parseBool(bestSeller) } : {}),
       ...(quantity != null ? { quantity: parseInt(quantity, 10) } : {}),
-      ...(image ? { image } : {}),
-      brand_segment: effectiveBrandSegment,
-      category_slug: effectiveCategorySlug,
+      ...(uploadedImageUrl ? { image: uploadedImageUrl } : {}),
+      ...(effectiveBrandSegment ? { brand_segment: effectiveBrandSegment } : {}),
+      ...(effectiveCategorySlug ? { category_slug: effectiveCategorySlug } : {}),
     };
 
     // Removed category join in select

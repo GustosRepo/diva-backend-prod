@@ -39,11 +39,11 @@ router.get("/dashboard-stats", isAdminMiddleware, getAdminDashboardStats);
 
 router.get("/products", isAdminMiddleware, getAllProducts);
 
-router.get("/category", isAdminMiddleware, getAllCategories);
+router.get("/categories", isAdminMiddleware, getAllCategories);
+router.get("/category", isAdminMiddleware, getAllCategories); // legacy alias
 
 // 🔹 Admin Routes - Manage Products
-router.get("/products", isAdminMiddleware, getAllProducts); // Fetch all products (admin only)
-router.post("/products", isAdminMiddleware, addProduct); // Add a new product
+router.post("/products", isAdminMiddleware, upload.single("image"), extractFormData, addProduct); // Add a new product
 router.put("/products/:id", isAdminMiddleware, upload.single("image"), extractFormData, updateProduct); // Edit a product
 router.delete("/products/:id", isAdminMiddleware, deleteProduct); // Delete a product
 router.get("/products/:id", isAdminMiddleware, getProductById);  // Get product by ID
