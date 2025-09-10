@@ -27,18 +27,15 @@ export const decrementProductQuantity = async (productId, qty = 1) => {
         p_qty: pQty,
       });
       if (error) {
-        // Log but don't immediately fail — we'll attempt a fallback below
         console.warn("⚠️ decrement_product_quantity RPC returned error:", error);
       } else {
-        // RPC succeeded (data may be returned depending on implementation)
         return { data, error: null };
       }
     } catch (rpcEx) {
       console.warn("⚠️ decrement_product_quantity RPC threw exception:", rpcEx?.message || rpcEx);
     }
 
-    // Fallback: read current quantity and update it safely
-    // Note: This is not perfectly atomic across multiple concurrent requests but works as a robust fallback.
+    // Fallback
     const { data: product, error: selectErr } = await supabase
       .from("product")
       .select("quantity")
@@ -89,21 +86,22 @@ const uploadToSupabase = async (file) => {
   return `${process.env.SUPABASE_URL}/storage/v1/object/public/${process.env.SUPABASE_BUCKET}/${fileName}`;
 };
 
-// 🔹 Get a single product by ID
+// 🔹 Get a single product by ID (removed category join; category_id not populated)
 export const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
-    const { data: product } = await supabase
+    const { data: product, error } = await supabase
       .from("product")
-      .select("*, category:category!product_category_id_fkey(id, name)")
+      .select("*")
       .eq("id", id)
       .single();
+    if (error) throw error;
 
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    res.json(product);
+    res.json(mapProductRow(product));
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }
@@ -112,29 +110,43 @@ export const getProductById = async (req, res) => {
 
 export const getBestSellers = async (_req, res) => {
   try {
-    const { data: bestSellers } = await supabase
+    const { data: bestSellers, error } = await supabase
       .from("product")
       .select("*")
       .eq("best_seller", true);
+    if (error) throw error;
 
     if (!bestSellers || bestSellers.length === 0) {
-      return res.status(404).json({ message: "No best-sellers available" }); // ✅ More descriptive error
+      return res.status(404).json({ message: "No best-sellers available" });
     }
 
-    res.json(bestSellers); // ✅ Correct response format
+    res.json(bestSellers);
   } catch (error) {
     console.error("Error fetching best-sellers:", error);
     res.status(500).json({ error: "Failed to fetch best-sellers" });
   }
 };
 
-// 🔹 Fetch all products with pagination, filtering, search, and sorting
+// 🔹 Fetch all products (removed category join; slug-only filtering)
 export const getAllProducts = async (req, res) => {
   try {
-    let { categoryId, minPrice, maxPrice, search, sort, page = 1, limit = 10, brand_segment, brandSegment, category: categorySlug, category_slug, categorySlug: qsCategorySlug } = req.query;
+    let {
+      categoryId,
+      minPrice,
+      maxPrice,
+      search,
+      sort,
+      page = 1,
+      limit = 10,
+      brand_segment,
+      brandSegment,
+      category: categorySlug,
+      category_slug,
+      categorySlug: qsCategorySlug
+    } = req.query;
+
     page = parseInt(page);
     limit = parseInt(limit);
-
     if (isNaN(page) || isNaN(limit) || page < 1 || limit < 1) {
       return res.status(400).json({ message: "Page and limit must be positive numbers." });
     }
@@ -159,20 +171,25 @@ export const getAllProducts = async (req, res) => {
       const variants = new Set([slug]);
       if (base && base !== slug) variants.add(base);
       if (CATEGORY_SYNONYMS[slug]) CATEGORY_SYNONYMS[slug].forEach(s => variants.add(s));
-      Object.entries(CATEGORY_SYNONYMS).forEach(([full, shorts]) => { if (shorts.includes(slug)) variants.add(full); });
+      Object.entries(CATEGORY_SYNONYMS).forEach(([full, shorts]) => {
+        if (shorts.includes(slug)) variants.add(full);
+      });
       return Array.from(variants);
     };
     const categoryVariants = getCategorySlugVariants(rawCategorySlug);
 
     let query = supabase
       .from("product")
-      .select("id, title, description, price, best_seller, image, quantity, brand_segment, category_slug, category:category!product_category_id_fkey(id, name)");
+      .select("id, title, description, price, best_seller, image, quantity, brand_segment, category_slug");
 
-    if (categoryId) query = query.eq("category_id", categoryId);
+    if (categoryId) {
+      // Retained optional filter if some legacy products have category_id
+      query = query.eq("category_id", categoryId);
+    }
     if (effectiveBrand) query = query.eq("brand_segment", effectiveBrand);
     if (rawCategorySlug) {
-      if (categoryVariants.length > 1) query = query.in('category_slug', categoryVariants);
-      else query = query.eq('category_slug', rawCategorySlug);
+      if (categoryVariants.length > 1) query = query.in("category_slug", categoryVariants);
+      else query = query.eq("category_slug", rawCategorySlug);
     }
     if (minPrice) query = query.gte("price", parseFloat(minPrice));
     if (maxPrice) query = query.lte("price", parseFloat(maxPrice));
@@ -187,16 +204,16 @@ export const getAllProducts = async (req, res) => {
     const { data: products, error } = await query;
     if (error) throw error;
 
-    // Defensive post-filter (in case query builder .in() was ignored or variants mismatch)
     let filtered = products || [];
     let postFilterApplied = false;
     if (rawCategorySlug && categoryVariants.length) {
       const before = filtered.length;
-      filtered = filtered.filter(p => categoryVariants.includes((p.category_slug || '').toLowerCase()));
+      filtered = filtered.filter(p =>
+        categoryVariants.includes((p.category_slug || '').toLowerCase())
+      );
       if (filtered.length !== before) postFilterApplied = true;
     }
 
-    // Total count respecting our final filtered set (simpler fallback)
     const totalProducts = filtered.length;
 
     res.json({
@@ -210,7 +227,7 @@ export const getAllProducts = async (req, res) => {
         categoryVariants,
         postFilterApplied,
         receivedCount: (products || []).length,
-        effectiveBrand,
+        effectiveBrand
       }
     });
   } catch (error) {
@@ -219,20 +236,18 @@ export const getAllProducts = async (req, res) => {
   }
 };
 
-// 🔹 Add a new product (Admin only)
+// 🔹 Add a new product (removed category join in returning select)
 export const addProduct = async (req, res) => {
   const {
     title,
     description,
     price,
-    // categoryId, // deprecated for slug-based selection
     quantity,
     bestSeller,
-    brandSegment, // new camelCase
-    brand_segment, // fallback snake / query style
-    categorySlug, // new camelCase
-    category_slug, // fallback
-    // NEW shipping fields
+    brandSegment,
+    brand_segment,
+    categorySlug,
+    category_slug,
     weightOz,
     lengthIn,
     widthIn,
@@ -245,27 +260,18 @@ export const addProduct = async (req, res) => {
     if (req.user?.role !== "admin") {
       return res.status(403).json({ message: "Access denied: Admins only" });
     }
-
     if (!title || price == null) {
       return res.status(400).json({ message: "title and price are required" });
     }
 
     let imageUrl = null;
-    if (file) {
-      imageUrl = await uploadToSupabase(file);
-    }
+    if (file) imageUrl = await uploadToSupabase(file);
 
-    // Direct usage of provided brand & category slug (no category table lookup)
     let effectiveBrandSegment = (brandSegment || brand_segment || '').trim().toLowerCase();
     let effectiveCategorySlug = (categorySlug || category_slug || '').trim().toLowerCase();
 
-    // Enforce NOT NULL columns (per schema)
-    if (!effectiveBrandSegment) {
-      return res.status(400).json({ message: 'brandSegment required' });
-    }
-    if (!effectiveCategorySlug) {
-      return res.status(400).json({ message: 'categorySlug required' });
-    }
+    if (!effectiveBrandSegment) return res.status(400).json({ message: 'brandSegment required' });
+    if (!effectiveCategorySlug) return res.status(400).json({ message: 'categorySlug required' });
     if (!ALLOWED_BRANDS.has(effectiveBrandSegment)) {
       return res.status(400).json({ message: 'Invalid brandSegment' });
     }
@@ -277,23 +283,10 @@ export const addProduct = async (req, res) => {
       image: imageUrl,
       quantity: quantity != null ? parseInt(quantity, 10) : 0,
       best_seller: bestSeller === "true" || bestSeller === true,
-      // shipping fields
-      weight_oz:
-        weightOz !== undefined && weightOz !== null && `${weightOz}` !== ""
-          ? Math.max(0, parseInt(weightOz, 10))
-          : null,
-      length_in:
-        lengthIn !== undefined && lengthIn !== null && `${lengthIn}` !== ""
-          ? Number(lengthIn)
-          : null,
-      width_in:
-        widthIn !== undefined && widthIn !== null && `${widthIn}` !== ""
-          ? Number(widthIn)
-          : null,
-      height_in:
-        heightIn !== undefined && heightIn !== null && `${heightIn}` !== ""
-          ? Number(heightIn)
-          : null,
+      weight_oz: weightOz !== undefined && weightOz !== null && `${weightOz}` !== "" ? Math.max(0, parseInt(weightOz, 10)) : null,
+      length_in: lengthIn !== undefined && lengthIn !== null && `${lengthIn}` !== "" ? Number(lengthIn) : null,
+      width_in: widthIn !== undefined && widthIn !== null && `${widthIn}` !== "" ? Number(widthIn) : null,
+      height_in: heightIn !== undefined && heightIn !== null && `${heightIn}` !== "" ? Number(heightIn) : null,
       brand_segment: effectiveBrandSegment,
       category_slug: effectiveCategorySlug,
     };
@@ -301,39 +294,42 @@ export const addProduct = async (req, res) => {
     const { data: product, error } = await supabase
       .from("product")
       .insert(insertData)
-      .select("*, category:category!product_category_id_fkey(id, name)")
+      .select("*")
       .single();
-
     if (error) throw error;
+
     res.status(201).json(mapProductRow(product));
   } catch (error) {
     console.error("❌ Error adding product:", error);
     res.status(500).json({ message: "Error adding product", error: error.message });
   }
 };
-// 🔹 Update product (Admin only)
+
+// 🔹 Update product (removed category join in returning select)
 export const updateProduct = async (req, res) => {
   const { id } = req.params;
   const {
-    title, description, price, /*categoryId,*/ bestSeller, quantity,
+    title, description, price, bestSeller, quantity,
     brandSegment, brand_segment, categorySlug, category_slug,
-    // NEW:
     weightOz, lengthIn, widthIn, heightIn,
   } = req.body;
-  // const image = req.file ? `/uploads/${req.file.filename}` : undefined;
+
   try {
     if (req.user.role !== "admin") {
       return res.status(403).json({ message: "Access denied: Admins only" });
     }
-    // Simplified: rely only on provided brand & category slug; if absent, preserve existing values
+
     let effectiveBrandSegment = (brandSegment || brand_segment || '').trim().toLowerCase();
     let effectiveCategorySlug = (categorySlug || category_slug || '').trim().toLowerCase();
 
-    // Fetch existing product to preserve required fields when not explicitly provided
     if (!effectiveBrandSegment || !effectiveCategorySlug) {
-      const { data: existing, error: existingErr } = await supabase.from('product').select('brand_segment, category_slug').eq('id', id).single();
+      const { data: existing, error: existingErr } = await supabase
+        .from("product")
+        .select("brand_segment, category_slug")
+        .eq("id", id)
+        .single();
       if (existingErr) {
-        return res.status(400).json({ message: 'Product not found for update' });
+        return res.status(400).json({ message: "Product not found for update" });
       }
       if (!effectiveBrandSegment) effectiveBrandSegment = existing.brand_segment;
       if (!effectiveCategorySlug) effectiveCategorySlug = existing.category_slug;
@@ -349,11 +345,9 @@ export const updateProduct = async (req, res) => {
       ...(title != null ? { title } : {}),
       ...(description != null ? { description } : {}),
       ...(price != null ? { price: parseFloat(price) } : {}),
-      // ...(categoryId != null ? { category_id: categoryId } : {}), // deprecated
       ...(bestSeller != null ? { best_seller: bestSeller === true || bestSeller === "true" } : {}),
       ...(quantity != null ? { quantity: parseInt(quantity, 10) } : {}),
       ...(req.file ? { image: `/uploads/${req.file.filename}` } : {}),
-      // shipping
       ...(weightOz != null ? { weight_oz: Math.max(0, parseInt(weightOz, 10)) } : {}),
       ...(lengthIn != null ? { length_in: Number(lengthIn) } : {}),
       ...(widthIn  != null ? { width_in:  Number(widthIn) } : {}),
@@ -366,36 +360,38 @@ export const updateProduct = async (req, res) => {
       .from("product")
       .update(updateData)
       .eq("id", id)
-      .select("*, category:category!product_category_id_fkey(id, name)")
+      .select("*")
       .single();
     if (error) throw error;
+
     res.json(mapProductRow(updatedProduct));
   } catch (error) {
     res.status(500).json({ message: "Error updating product", error: error.message });
   }
 };
 
-// 🔹 Fetch products by category
+// 🔹 Fetch products by category (still uses category_id if legacy data exists; removed join)
 export const getProductsByCategory = async (req, res) => {
   try {
     const { categoryId } = req.params;
-    // Validate category existence
-    const { data: category } = await supabase
+
+    // If products no longer use category_id this will likely return empty.
+    const { data: category, error: catErr } = await supabase
       .from("category")
       .select("*")
       .eq("id", categoryId)
       .single();
-    if (!category) {
+    if (catErr || !category) {
       return res.status(400).json({ message: "Invalid category ID" });
     }
-    // Fetch products by categoryId
+
     const { data: products, error } = await supabase
       .from("product")
-      .select("*, category:category!product_category_id_fkey(id, name)")
-    // Use correct foreign key column (category_id) if schema follows snake_case
-    .eq("category_id", categoryId);
+      .select("*")
+      .eq("category_id", categoryId);
     if (error) throw error;
-    res.json(products);
+
+    res.json((products || []).map(mapProductRow));
   } catch (error) {
     res.status(500).json({ message: "Error fetching products by category", error: error.message });
   }

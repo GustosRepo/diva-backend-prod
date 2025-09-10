@@ -160,18 +160,27 @@ export const getAllProducts = async (req, res) => {
     }
 
     const effectiveBrand = (brand_segment || brandSegment || "").trim();
-    const effectiveCategorySlug = (categorySlug || category_slug || qsCategorySlug || "").trim();
+    const effectiveCategorySlug =
+      (categorySlug || category_slug || qsCategorySlug || "").trim();
 
-    let query = supabase.from("product").select("*, category:category!product_category_id_fkey(id, name)");
+    // Removed category join because category_id is not set (using slug approach)
+    let query = supabase.from("product").select("*");
     if (categoryId) query = query.eq("category_id", categoryId);
-    if (effectiveBrand) query = query.eq("brand_segment", effectiveBrand.toLowerCase());
-    if (effectiveCategorySlug) query = query.eq("category_slug", effectiveCategorySlug.toLowerCase());
+    if (effectiveBrand)
+      query = query.eq("brand_segment", effectiveBrand.toLowerCase());
+    if (effectiveCategorySlug)
+      query = query.eq(
+        "category_slug",
+        effectiveCategorySlug.toLowerCase()
+      );
     if (minPrice) query = query.gte("price", parseFloat(minPrice));
     if (maxPrice) query = query.lte("price", parseFloat(maxPrice));
     if (search) query = query.ilike("title", `%${search}%`);
 
-    if (sort === "price_asc") query = query.order("price", { ascending: true });
-    else if (sort === "price_desc") query = query.order("price", { ascending: false });
+    if (sort === "price_asc")
+      query = query.order("price", { ascending: true });
+    else if (sort === "price_desc")
+      query = query.order("price", { ascending: false });
     else query = query.order("created_at", { ascending: false });
 
     query = query.range((page - 1) * limit, page * limit - 1);
@@ -180,10 +189,20 @@ export const getAllProducts = async (req, res) => {
     if (error) throw error;
 
     // Count with filters
-    let countQuery = supabase.from("product").select("id", { count: "exact", head: true });
+    let countQuery = supabase
+      .from("product")
+      .select("id", { count: "exact", head: true });
     if (categoryId) countQuery = countQuery.eq("category_id", categoryId);
-    if (effectiveBrand) countQuery = countQuery.eq("brand_segment", effectiveBrand.toLowerCase());
-    if (effectiveCategorySlug) countQuery = countQuery.eq("category_slug", effectiveCategorySlug.toLowerCase());
+    if (effectiveBrand)
+      countQuery = countQuery.eq(
+        "brand_segment",
+        effectiveBrand.toLowerCase()
+      );
+    if (effectiveCategorySlug)
+      countQuery = countQuery.eq(
+        "category_slug",
+        effectiveCategorySlug.toLowerCase()
+      );
     if (minPrice) countQuery = countQuery.gte("price", parseFloat(minPrice));
     if (maxPrice) countQuery = countQuery.lte("price", parseFloat(maxPrice));
     if (search) countQuery = countQuery.ilike("title", `%${search}%`);
@@ -205,35 +224,54 @@ export const getAllProducts = async (req, res) => {
 
 export const updateProduct = async (req, res) => {
   const { id } = req.params;
-  const { title, description, price, bestSeller, quantity, brandSegment, brand_segment, categorySlug, category_slug } = req.body;
+  const {
+    title,
+    description,
+    price,
+    bestSeller,
+    quantity,
+    brandSegment,
+    brand_segment,
+    categorySlug,
+    category_slug,
+  } = req.body;
   const image = req.file ? `/uploads/${req.file.filename}` : undefined;
   try {
     if (req.user.role !== "admin") {
       return res.status(403).json({ message: "Access denied: Admins only" });
     }
-    let effectiveBrandSegment = (brandSegment || brand_segment || "").trim().toLowerCase();
-    let effectiveCategorySlug = (categorySlug || category_slug || "").trim().toLowerCase();
+    let effectiveBrandSegment = (brandSegment || brand_segment || "")
+      .trim()
+      .toLowerCase();
+    let effectiveCategorySlug = (categorySlug || category_slug || "")
+      .trim()
+      .toLowerCase();
 
     const updateData = {
       ...(title != null ? { title } : {}),
       ...(description != null ? { description } : {}),
       ...(price != null ? { price: parseFloat(price) } : {}),
-      ...(bestSeller != null ? { best_seller: bestSeller === "true" || bestSeller === true } : {}),
+      ...(bestSeller != null
+        ? { best_seller: bestSeller === "true" || bestSeller === true }
+        : {}),
       ...(quantity != null ? { quantity: parseInt(quantity, 10) } : {}),
       ...(image ? { image } : {}),
       brand_segment: effectiveBrandSegment,
       category_slug: effectiveCategorySlug,
     };
 
+    // Removed category join in select
     const { data: updatedProduct, error } = await supabase
       .from("product")
       .update(updateData)
       .eq("id", id)
-      .select("*, category:category!product_category_id_fkey(id, name)")
+      .select("*")
       .single();
     if (error) throw error;
     res.json(mapAdminProductRow(updatedProduct));
   } catch (error) {
-    res.status(500).json({ message: "Error updating product", error: error.message });
+    res
+      .status(500)
+      .json({ message: "Error updating product", error: error.message });
   }
 };
