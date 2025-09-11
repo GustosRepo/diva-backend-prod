@@ -9,7 +9,7 @@ import {
   trackOrder,
   cancelOrder,
   getOrderById,
-  deleteOrder, // ✅ Import delete function
+  deleteOrder,
   markOrderPaid,
   markOrderPickedUp,
   cancelExpiredPickupHolds,
@@ -31,33 +31,41 @@ const proofUpload = multer({
   }
 });
 
-const router = express.Router();
+// =====================
+// Public/User router (mount at /orders)
+// =====================
+export const publicRouter = express.Router();
 
-// ✅ Guest-friendly Order Tracking Route
-router.get("/track", trackOrder);
+// Guest-friendly order tracking
+publicRouter.get("/track", trackOrder);
 
-// ✅ Admin Routes (Protected)
-router.get("/admin/orders", authMiddleware, isAdminMiddleware, getFilteredOrders);
-router.get("/admin/orders/:id", authMiddleware, isAdminMiddleware, getOrderById); // Get single order
-router.delete("/admin/orders/:orderId", authMiddleware, isAdminMiddleware, deleteOrder); // ✅ Delete order
-router.get("/admin/search", authMiddleware, isAdminMiddleware, searchOrdersByEmail); // Search orders by email
-
-
-// ✅ User Routes
-router.get("/my-orders", authMiddleware, getUserOrders); // User's Orders
-router.post("/", authMiddleware, createOrder); // Create new order
-// Local Pickup (Pay on Pickup)
-router.post("/pickup", authMiddleware, createPickupOrder);
-router.put("/admin/orders/:orderId", authMiddleware, isAdminMiddleware, updateOrderStatus);
-router.put("/:orderId/cancel", authMiddleware, cancelOrder); // Cancel order
+// User routes
+publicRouter.get("/my-orders", authMiddleware, getUserOrders); // User's Orders
+publicRouter.post("/", authMiddleware, createOrder); // Create new order
+publicRouter.post("/pickup", authMiddleware, createPickupOrder); // Local Pickup (Pay on Pickup)
+publicRouter.put("/:orderId/cancel", authMiddleware, cancelOrder); // User/Admin cancel by id
 
 // Upload payment proof
-router.post("/:id/payment-proof", authMiddleware, proofUpload.single('file'), uploadPaymentProof);
+publicRouter.post("/:id/payment-proof", authMiddleware, proofUpload.single('file'), uploadPaymentProof);
 
-// Admin/ops helpers for pickup flow
-router.patch("/:id/mark-paid", authMiddleware, isAdminMiddleware, markOrderPaid);
-router.patch("/:id/mark-picked-up", authMiddleware, isAdminMiddleware, markOrderPickedUp);
-router.patch("/:id/cancel", authMiddleware, isAdminMiddleware, cancelOrder);
-router.post("/admin/cancel-expired-pickups", authMiddleware, isAdminMiddleware, cancelExpiredPickupHolds);
+// =====================
+// Admin router (mount at /admin/orders)
+// =====================
+export const adminRouter = express.Router();
 
-export default router;
+// Admin list/search
+adminRouter.get("/", authMiddleware, isAdminMiddleware, getFilteredOrders); // GET /admin/orders
+adminRouter.get("/search", authMiddleware, isAdminMiddleware, searchOrdersByEmail); // GET /admin/orders/search
+
+// Admin CRUD on a single order
+adminRouter.get("/:id", authMiddleware, isAdminMiddleware, getOrderById); // GET /admin/orders/:id
+adminRouter.put("/:orderId", authMiddleware, isAdminMiddleware, updateOrderStatus); // PUT /admin/orders/:orderId
+adminRouter.delete("/:orderId", authMiddleware, isAdminMiddleware, deleteOrder); // DELETE /admin/orders/:orderId
+
+// Admin helpers for pickup/payment flow
+adminRouter.patch("/:id/mark-paid", authMiddleware, isAdminMiddleware, markOrderPaid);
+adminRouter.patch("/:id/mark-picked-up", authMiddleware, isAdminMiddleware, markOrderPickedUp);
+adminRouter.patch("/:id/cancel", authMiddleware, isAdminMiddleware, cancelOrder);
+adminRouter.post("/cancel-expired-pickups", authMiddleware, isAdminMiddleware, cancelExpiredPickupHolds);
+
+export default { publicRouter, adminRouter };

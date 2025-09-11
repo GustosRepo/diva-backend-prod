@@ -756,8 +756,7 @@ export const deleteOrder = async (req, res) => {
     }
 
     // 🧹 Delete related order_items first
-    await supabase.from("order_item").delete().eq("orderId", orderId);
-
+    await supabase.from("order_item").delete().eq("order_id", orderId);
     // 🗑 Now delete the order
     await supabase.from("order").delete().eq("id", orderId);
 
