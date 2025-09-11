@@ -1,11 +1,14 @@
 import express from "express";
 import { getShippingInfo, updateUserInfo, getUserInfo } from "../controllers/userController.js";
 import authMiddleware from "../middleware/authMiddleware.js";
+import { changePassword } from "../controllers/userController.js";
+
 
 const router = express.Router();
 
 // ✅ Route to get saved shipping info for logged-in user
 router.get("/:userId/shipping", authMiddleware, getShippingInfo);
+router.put("/change-password", authMiddleware, changePassword);
 
 router.put("/update", authMiddleware, updateUserInfo); // ✅ Protected route
 router.get("/:userId", authMiddleware, getUserInfo); // ✅ Protected route

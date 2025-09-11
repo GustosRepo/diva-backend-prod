@@ -1,4 +1,6 @@
 import supabase from "../../supabaseClient.js";
+import bcrypt from "bcryptjs";
+
 
 // Fetch user shipping info
 export const getShippingInfo = async (req, res) => {
@@ -65,5 +67,48 @@ export const getUserInfo = async (req, res) => {
     res.json(user);
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// PUT /users/change-password
+export const changePassword = async (req, res) => {
+  try {
+    const userId = req.user?.id || req.user?.userId;
+    const { currentPassword, newPassword } = req.body || {};
+
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: "currentPassword and newPassword are required" });
+    }
+    if (typeof newPassword !== "string" || newPassword.length < 8) {
+      return res.status(400).json({ message: "newPassword must be at least 8 characters" });
+    }
+
+    // Fetch user
+    const { data: user, error: getErr } = await supabase
+      .from("user")
+      .select("id, password, email")
+      .eq("id", userId)
+      .single();
+    if (getErr || !user) return res.status(404).json({ message: "User not found" });
+
+    // Verify current password
+    const ok = await bcrypt.compare(currentPassword, user.password);
+    if (!ok) return res.status(400).json({ message: "Current password is incorrect" });
+
+    // Hash and update
+    const salt = await bcrypt.genSalt(10);
+    const hashed = await bcrypt.hash(newPassword, salt);
+
+    const { error: updErr } = await supabase
+      .from("user")
+      .update({ password: hashed, updated_at: new Date().toISOString() })
+      .eq("id", userId);
+    if (updErr) return res.status(500).json({ message: "Failed to update password" });
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("changePassword error:", e);
+    return res.status(500).json({ message: "Server error", error: e.message });
   }
 };

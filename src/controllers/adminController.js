@@ -1,4 +1,5 @@
 import supabase from "../../supabaseClient.js";
+import bcrypt from "bcryptjs";
 
 // Helpers for parsing form values
 const parseBool = (v, fallback = false) => {
@@ -399,5 +400,52 @@ export const updateProduct = async (req, res) => {
     res
       .status(500)
       .json({ message: "Error updating product", error: error.message });
+  }
+};
+
+// 🔹 Reset User Password (Admin Only)
+export const resetUserPassword = async (req, res) => {
+  try {
+    // Admin-only guard (route is also gated by middleware)
+    if (!req.user || req.user.role !== "admin") {
+      return res.status(403).json({ message: "Access denied: Admins only" });
+    }
+
+    const { userId } = req.params;
+    const { newPassword } = req.body || {};
+
+    if (!newPassword || typeof newPassword !== "string" || newPassword.length < 8) {
+      return res.status(400).json({ message: "newPassword must be at least 8 characters" });
+    }
+
+    // Ensure the user exists (and grab email for clarity in response)
+    const { data: user, error: findErr } = await supabase
+      .from("user")
+      .select("id, email")
+      .eq("id", userId)
+      .single();
+
+    if (findErr || !user) {
+      return res.status(404).json({ message: "User not found (local lookup)" });
+    }
+
+    // Hash with bcrypt before storing
+    const salt = await bcrypt.genSalt(10);
+    const hashed = await bcrypt.hash(newPassword, salt);
+
+    const { error: updErr } = await supabase
+      .from("user")
+      .update({ password: hashed, updated_at: new Date().toISOString() })
+      .eq("id", userId);
+
+    if (updErr) {
+      console.error("[resetUserPassword] update error:", updErr);
+      return res.status(500).json({ message: "Failed to update password" });
+    }
+
+    return res.json({ success: true, method: "db-update", userId: user.id, email: user.email || null });
+  } catch (error) {
+    console.error("[resetUserPassword] unhandled error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
   }
 };
