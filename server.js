@@ -7,6 +7,8 @@ import cors from "cors";
 import path from "path";
 import cookieParser from "cookie-parser";
 import fs from "fs";
+import { publicRouter as orderPublicRouter, adminRouter as orderAdminRouter } from "./src/routes/orderRoutes.js";
+
 
 // ✅ Must be imported first to mount BEFORE body parsing
 import webhookRoutes from "./src/routes/webhookRoutes.js";
@@ -115,7 +117,6 @@ app.all('/admin/users/:userId/reset-password-test', (req, res) => {
 
 // ✅ Other routes
 import authRoutes from "./src/routes/auth.js";
-import { publicRouter as orderPublicRoutes, adminRouter as orderAdminRoutes } from "./src/routes/orderRoutes.js";
 import { publicRouter as categoryPublicRoute, adminRouter as categoryAdminRoute } from "./src/routes/categoryRoute.js";
 import productRoutes from "./src/routes/productRoutes.js";
 import adminRoutes from "./src/routes/adminRoutes.js";
@@ -127,8 +128,8 @@ import blogRoutes from "./src/routes/blogRoutes.js";
 import popupEventRoutes from "./src/routes/popupEventRoutes.js";
 
 app.use("/auth", authRoutes);
-app.use("/orders", orderPublicRoutes);
-app.use("/admin/orders", orderAdminRoutes);
+app.use("/orders", orderPublicRouter);
+app.use("/admin/orders", orderAdminRouter);
 app.use("/categories", categoryPublicRoute);
 app.use("/admin/categories", categoryAdminRoute);
 app.use("/products", productRoutes);
