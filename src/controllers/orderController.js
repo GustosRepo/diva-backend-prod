@@ -38,7 +38,7 @@ export async function sendShippingNotification(orderId) {
     .single();
   if (error || !order) throw new Error("Order not found for shipping notification");
 
-  const subject = "Your Diva Nails Order Has Shipped!";
+  const subject = "Your Diva Order Has Shipped!";
   const htmlContent = `<p>Thank you for your order 💅 Your tracking number is: <b>${order.tracking_code}</b></p>`;
   await sendEmail(order.email, subject, htmlContent);
 }

@@ -11,7 +11,7 @@ const HANDLING_FEE = (() => {
 })();
 const DEFAULT_ITEM_WEIGHT_OZ = (() => {
   const v = Number(process.env.DEFAULT_ITEM_WEIGHT_OZ);
-  return Number.isFinite(v) ? v : 12;
+  return Number.isFinite(v) ? v : 16;
 })();
 
 if (!process.env.SHIP_FROM_EMAIL || !process.env.SHIP_FROM_PHONE) {
@@ -95,15 +95,18 @@ function toOz(value, unit = "oz") {
 }
 
 function buildParcelFromItems(items = [], opts = {}) {
-  const packagingTareOz = opts.packagingTareOz ?? 8; // box + tape + label + filler
-  const minOz = opts.minOz ?? 8;
+  const packagingTareOz = opts.packagingTareOz ?? 16; // box + tape + label + filler
+  const minOz = opts.minOz ?? 16;
 
   let actualOz = 0;
+  let totalQty = 0;
+  let sumHeightItems = 0; // sum of item heights × qty (inches)
   // start with a small default; grow if any item has larger dims
   let box = { length: 10, width: 6, height: 4 };
 
   for (const it of items) {
     const qty = Number(it.quantity || 1);
+    totalQty += qty;
 
     // preferred: explicit per-item weight in ounces
     let wOz = Number(it.weightOz || 0);
@@ -116,10 +119,24 @@ function buildParcelFromItems(items = [], opts = {}) {
     actualOz += (wOz || 0) * qty;
 
     if (it.lengthIn && it.widthIn && it.heightIn) {
-      box.length = Math.max(box.length, Number(it.lengthIn));
-      box.width  = Math.max(box.width,  Number(it.widthIn));
-      box.height = Math.max(box.height, Number(it.heightIn));
+      const L = Number(it.lengthIn);
+      const W = Number(it.widthIn);
+      const H = Number(it.heightIn);
+      box.length = Math.max(box.length, L);
+      box.width  = Math.max(box.width,  W);
+      // Keep existing max-height behavior so single-item stays the same
+      box.height = Math.max(box.height, H);
+      // Accumulate per-item height for optional stacking
+      sumHeightItems += (Number.isFinite(H) ? H : 0) * qty;
     }
+  }
+
+  // Optional: stack heights when there are multiple items (opt-in)
+  // Enable by setting STACK_HEIGHT_FOR_MULTI_ITEM=1 in the environment.
+  if (process.env.STACK_HEIGHT_FOR_MULTI_ITEM === "1" && totalQty > 1 && sumHeightItems > 0) {
+    const clearance = Number.isFinite(opts.clearanceIn) ? Number(opts.clearanceIn) : 1; // 1 inch padding
+    const stackedHeight = Math.ceil(sumHeightItems + clearance);
+    box.height = Math.max(box.height, stackedHeight);
   }
 
   // dimensional weight (lb) -> oz
