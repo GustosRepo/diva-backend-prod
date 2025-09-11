@@ -140,7 +140,7 @@ app.use("/checkout", checkoutRoutes);
 app.use("/email", emailRoutes);
 app.use("/analytics", analyticsRoutes);
 app.use("/api/blog", blogRoutes);
-app.use("/api/popup-events", popupEventRoutes);
+app.use("/popup-events", popupEventRoutes);
 
 // === LOG REGISTERED ADMIN ROUTES ===
 console.log('\n=== ADMIN ROUTES REGISTERED ===');
