@@ -37,7 +37,6 @@ router.get("/", getAllProducts);
 router.post("/", isAdminMiddleware, upload.single("image"), extractFormData, addProduct);
 router.get("/best-sellers", getBestSellers);
 router.get("/category/:categoryId", getProductsByCategory); // must come before ":id"
-router.get("/admin/products", isAdminMiddleware, getAllProducts); // must come before ":id"
 router.get("/:id", getProductById);
 router.put("/:id", isAdminMiddleware, upload.single("image"), extractFormData, updateProduct);
 router.delete("/:id", isAdminMiddleware, deleteProduct);

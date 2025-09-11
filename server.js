@@ -7,7 +7,6 @@ import cors from "cors";
 import path from "path";
 import cookieParser from "cookie-parser";
 import fs from "fs";
-import { publicRouter as orderPublicRouter, adminRouter as orderAdminRouter } from "./src/routes/orderRoutes.js";
 
 
 // ✅ Must be imported first to mount BEFORE body parsing
@@ -126,6 +125,8 @@ import emailRoutes from "./src/routes/emailRoutes.js";
 import analyticsRoutes from "./src/routes/analyticsRoutes.js";
 import blogRoutes from "./src/routes/blogRoutes.js";
 import popupEventRoutes from "./src/routes/popupEventRoutes.js";
+import { publicRouter as orderPublicRouter, adminRouter as orderAdminRouter } from "./src/routes/orderRoutes.js";
+
 
 app.use("/auth", authRoutes);
 app.use("/orders", orderPublicRouter);
