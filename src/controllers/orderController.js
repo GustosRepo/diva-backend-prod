@@ -140,8 +140,7 @@ export const createPickupOrder = async (req, res) => {
     const authUser = req.user || {};
     const userId = authUser.id || authUser.userId;
 
-    const { items, customer, notes } = req.body || {};
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+const { items, customer, notes, taxes, tax_rate } = req.body || {};    if (!userId) return res.status(401).json({ message: "Unauthorized" });
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: "items required" });
     }
@@ -204,7 +203,10 @@ export const createPickupOrder = async (req, res) => {
       shipping_method: "local_pickup",
       payment_method: "pay_on_pickup",
       payment_status: "unpaid",
-      taxes: 0,
+      taxes: Number(taxes) || 0, // ✅ Use the actual taxes from frontend
+      tax_rate: Number(tax_rate) || 0, // ✅ Also store the tax rate
+      total_amount: Math.max(0, Number(subtotal) + Number(taxes || 0)), // ✅ Include taxes
+      subtotal: Number(subtotal.toFixed(2)),
       notes: notes || null,
       pickup: {
         reservation_expires_at: expiresAt.toISOString(),
@@ -219,7 +221,7 @@ export const createPickupOrder = async (req, res) => {
     const orderInsert = {
       user_id: userId,
       email: customer?.email || authUser.email || null,
-      total_amount: Math.max(0, Number(subtotal)),
+      total_amount: Math.max(0, Number(subtotal) + Number(taxes || 0)),
       status: "awaiting_pickup",
       tracking_code: "Pickup",
       shipping_info: shippingInfo,
