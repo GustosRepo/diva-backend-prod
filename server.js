@@ -46,8 +46,8 @@ const CORS_ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || "")
 const defaultAllowedOrigins = [
   FRONTEND_ORIGIN,
   "https://divacms-frontend-prod.vercel.app",
-  "https://thedivefactory.com",
-  "https://www.thedivefactory.com",
+  "https://thedivafactory.com",
+  "https://www.thedivafactory.com",
   "http://localhost:3000"
 ].filter(Boolean);
 
