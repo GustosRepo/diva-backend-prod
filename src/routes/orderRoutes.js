@@ -14,6 +14,7 @@ import {
   markOrderPickedUp,
   cancelExpiredPickupHolds,
   uploadPaymentProof,
+  getPaymentProofSignedUrl,
 } from "../controllers/orderController.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 import isAdminMiddleware from "../middleware/isAdminMiddleware.js";
@@ -48,6 +49,9 @@ publicRouter.put("/:orderId/cancel", authMiddleware, cancelOrder); // User/Admin
 // Upload payment proof
 publicRouter.post("/:id/payment-proof", authMiddleware, proofUpload.single('file'), uploadPaymentProof);
 
+// Fetch short-lived signed payment proof URL (owner or admin permitted by controller)
+publicRouter.get("/:id/payment-proof-url", authMiddleware, getPaymentProofSignedUrl);
+
 // =====================
 // Admin router (mount at /admin/orders)
 // =====================
@@ -67,5 +71,8 @@ adminRouter.patch("/:id/mark-paid", authMiddleware, isAdminMiddleware, markOrder
 adminRouter.patch("/:id/mark-picked-up", authMiddleware, isAdminMiddleware, markOrderPickedUp);
 adminRouter.patch("/:id/cancel", authMiddleware, isAdminMiddleware, cancelOrder);
 adminRouter.post("/cancel-expired-pickups", authMiddleware, isAdminMiddleware, cancelExpiredPickupHolds);
+
+// Admin convenience: fetch short-lived signed payment proof URL
+adminRouter.get("/:id/payment-proof-url", authMiddleware, isAdminMiddleware, getPaymentProofSignedUrl);
 
 export default { publicRouter, adminRouter };

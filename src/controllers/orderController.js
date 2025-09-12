@@ -28,6 +28,26 @@ function sendEmailNonBlocking(to, subject, html) {
     .catch((err) => console.error(`❌ Email send failed to ${to}:`, err));
 }
 
+// Ensure the Supabase storage bucket exists (service role key required). No-op if already exists.
+async function ensureOrdersBucket(bucketName) {
+  try {
+    if (!supabase?.storage?.listBuckets) return; // older clients may not support
+    const { data: buckets } = await supabase.storage.listBuckets();
+    const exists = Array.isArray(buckets) && buckets.some((b) => b.name === bucketName);
+    if (!exists && supabase.storage.createBucket) {
+      const { error: cErr } = await supabase.storage.createBucket(bucketName, {
+        public: false,
+        fileSizeLimit: 10 * 1024 * 1024, // 10MB
+      });
+      if (cErr && cErr.status !== 409) {
+        console.warn("⚠️ createBucket failed:", cErr);
+      }
+    }
+  } catch (e) {
+    console.warn("⚠️ ensureOrdersBucket error:", e?.message || e);
+  }
+}
+
 // Send shipping notification email
 export async function sendShippingNotification(orderId) {
   // Fetch order details (email, tracking_code, etc.)
@@ -327,31 +347,50 @@ export const uploadPaymentProof = async (req, res) => {
     const file = req.file;
     if (!file) return res.status(400).json({ message: "file is required (image/* or application/pdf)" });
 
-    const bucket = process.env.SUPABASE_ORDERS_BUCKET || process.env.SUPABASE_BUCKET || 'orders';
+    // ✅ Default to the already-working public bucket where product images live
+    // You can override via env: SUPABASE_ORDERS_BUCKET=divasDB
+    const bucket = (process.env.SUPABASE_ORDERS_BUCKET || "divasDB").trim();
+
+    // If you later switch to a separate private bucket, the code below will auto-fallback to a signed URL.
+    await ensureOrdersBucket(bucket);
+
     const timestamp = Date.now();
     const safeName = String(file.originalname || 'proof').replace(/[^a-zA-Z0-9_.-]/g, '_');
-    const path = `orders/${id}/${timestamp}_${safeName}`;
+    const objectPath = `orders/${id}/${timestamp}_${safeName}`;
 
     // Upload to Supabase Storage
     const { error: upErr } = await supabase.storage
       .from(bucket)
-      .upload(path, file.buffer, { contentType: file.mimetype, upsert: true });
+      .upload(objectPath, file.buffer, { contentType: file.mimetype || 'application/octet-stream', upsert: true });
     if (upErr) {
       console.error("❌ payment proof upload error:", upErr);
       return res.status(500).json({ message: "Failed to upload file" });
     }
 
-    // Public URL (assumes bucket public); fallback to signed URL
-    let publicUrl = supabase.storage.from(bucket).getPublicUrl(path)?.data?.publicUrl;
-    if (!publicUrl) {
+    // Prefer a public URL (works immediately if bucket is public, e.g. divasDB)
+    let viewUrl = null;
+    try {
+      const { data: pub } = supabase.storage.from(bucket).getPublicUrl(objectPath);
+      viewUrl = pub?.publicUrl || null;
+    } catch (_) { /* ignore */ }
+
+    // Fallback: if bucket is private or public URL not available, create a signed URL
+    if (!viewUrl) {
       try {
-        const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 7); // 7 days
-        publicUrl = signed?.signedUrl || null;
-      } catch (_) {}
+        const days = Number(process.env.SUPABASE_SIGNED_URL_TTL_DAYS || 7);
+        const { data: signed } = await supabase.storage
+          .from(bucket)
+          .createSignedUrl(objectPath, days * 24 * 60 * 60);
+        viewUrl = signed?.signedUrl || null;
+      } catch (sErr) {
+        console.warn("⚠️ createSignedUrl fallback failed:", sErr);
+      }
     }
 
+    // Update order: store both the storage path and the URL we can render in the dashboard
     const info = order.shipping_info || {};
-    info.payment_proof_url = publicUrl;
+    info.payment_proof_path = objectPath;
+    if (viewUrl) info.payment_proof_url = viewUrl; // keep legacy-friendly field so frontend "View proof" just works
     info.payment_proof_status = "submitted";
     info.payment_proof_uploaded_at = new Date().toISOString();
 
@@ -359,12 +398,59 @@ export const uploadPaymentProof = async (req, res) => {
       .from("order")
       .update({ shipping_info: info })
       .eq("id", id);
-    if (updErr) return res.status(500).json({ message: "Failed to update order with proof URL" });
+    if (updErr) return res.status(500).json({ message: "Failed to update order with proof info" });
 
-    return res.status(201).json({ payment_proof_url: publicUrl });
+    return res.status(201).json({ payment_proof_url: viewUrl, payment_proof_path: objectPath });
   } catch (e) {
     console.error("❌ uploadPaymentProof error:", e);
     return res.status(500).json({ message: "Failed to upload payment proof" });
+  }
+};
+
+// Admin/Owner: generate or return a URL to view payment proof
+export const getPaymentProofSignedUrl = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = req.user || {};
+
+    const { data: order, error } = await supabase
+      .from('order')
+      .select('id, user_id, shipping_info')
+      .eq('id', id)
+      .single();
+    if (error || !order) return res.status(404).json({ message: 'Order not found' });
+
+    const isOwner = String(order.user_id) === String(user.id || user.userId);
+    const isAdmin = (user.role === 'admin' || user.isAdmin === true);
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ message: 'Not authorized to view proof for this order' });
+    }
+
+    // If we already saved a directly viewable URL, return it
+    const directUrl = order?.shipping_info?.payment_proof_url;
+    if (directUrl) {
+      return res.json({ url: directUrl, direct: true });
+    }
+
+    const bucket = (process.env.SUPABASE_ORDERS_BUCKET || 'divasDB').trim();
+    const path = order?.shipping_info?.payment_proof_path;
+
+    // Back-compat: if legacy URL exists but no storage path, return it as-is
+    const legacyUrl = order?.shipping_info?.payment_proof_url;
+    if (!path && legacyUrl) {
+      return res.json({ url: legacyUrl, legacy: true });
+    }
+    if (!path) return res.status(404).json({ message: 'No payment proof on file' });
+
+    // Create a short-lived signed URL (5 minutes) for private buckets
+    const { data: signed, error: sErr } = await supabase.storage
+      .from(bucket)
+      .createSignedUrl(path, 60 * 5);
+    if (sErr) return res.status(500).json({ message: 'Failed to create signed URL' });
+    return res.json({ url: signed?.signedUrl || null, direct: false });
+  } catch (e) {
+    console.error('❌ getPaymentProofSignedUrl error:', e);
+    return res.status(500).json({ message: 'Failed to fetch payment proof URL' });
   }
 };
 
