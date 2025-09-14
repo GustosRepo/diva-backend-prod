@@ -102,11 +102,25 @@ export const getAllOrders = async (req, res) => {
     if (error) throw error;
 
     // Map total_amount to totalAmount for each order
-    // Map total_amount to totalAmount for each order
-    const cleanedOrders = orders.map(order => ({
-      ...order,
-      totalAmount: order.total_amount,
-    }));
+    // Add derived items array for each order
+    const cleanedOrders = orders.map((order) => {
+      const items = Array.isArray(order.order_item)
+        ? order.order_item.map((oi) => ({
+            productId: oi.product_id,
+            title: oi.product?.title ?? null,
+            quantity: Number(oi.quantity || 0),
+            unitPrice: Number(oi.price || 0),
+            lineTotal: Number(oi.price || 0) * Number(oi.quantity || 0),
+          }))
+        : [];
+
+      return {
+        ...order,
+        // keep raw order_item for backward compatibility
+        items,
+        totalAmount: order.total_amount,
+      };
+    });
 
     res.json({
       page,
@@ -297,7 +311,7 @@ const { items, customer, notes, taxes, tax_rate } = req.body || {};    if (!user
           <div style="font-family: Arial, sans-serif; padding:16px">
             <h2 style="color:#d63384">Local Pickup Reserved</h2>
             <p>Order <b>${newOrder.id}</b> is reserved for <b>48 hours</b>.</p>
-            <p>Pickup hours: <b>8am–8pm</b>. We will coordinate time/location — reply to this email or contact <a href="mailto:${shippingInfo.pickup.contact_email}">${shippingInfo.pickup.contact_email}</a>.</p>
+            <p>Pickup hours: <b>10am–6pm</b>. We will coordinate time/location — reply to this email or contact <a href="mailto:${shippingInfo.pickup.contact_email}">${shippingInfo.pickup.contact_email}</a>.</p>
             <p>Total due at pickup: <b>$${orderInsert.total_amount.toFixed(2)}</b></p>
             <p>Reservation expires: <b>${expiresAt.toISOString()}</b></p>
           </div>`;
@@ -488,10 +502,15 @@ export const createOrder = async (req, res) => {
 
     const userPoints = user.points || 0;
 
-    // Calculate discount from points
+    // Calculate discount from points: 10% off per 1000 points used, only in 1000-point increments
     let discount = 0;
-    if (pointsUsed === 50) discount = totalAmount * 0.05;
-    if (pointsUsed === 100) discount = totalAmount * 0.1;
+    let validPointsUsed = 0;
+    if (pointsUsed && pointsUsed >= 1000 && pointsUsed % 1000 === 0 && pointsUsed <= userPoints) {
+      validPointsUsed = pointsUsed;
+      // Each 1000 points = 10% off
+      const discountMultiplier = validPointsUsed / 1000 * 0.1;
+      discount = totalAmount * discountMultiplier;
+    }
 
     // If local pickup, shipping is $0 (ignore any shipping fee in totalAmount)
     let finalTotal;
@@ -582,13 +601,15 @@ export const createOrder = async (req, res) => {
       // continue; order stays created
     }
 
-    // 4) Update user points balance
-    const newPointsBalance = userPoints - (pointsUsed || 0) + Math.floor(finalTotal);
-    await supabase.from("user").update({ points: newPointsBalance }).eq("id", userId);
+  // 4) Update user points balance
+  // Earn 1 point per $10 spent (rounded down)
+  const pointsEarned = Math.floor(finalTotal / 10);
+  const newPointsBalance = userPoints - (validPointsUsed || 0) + pointsEarned;
+  await supabase.from("user").update({ points: newPointsBalance }).eq("id", userId);
 
     // Send order confirmation email to customer
       {
-        const subject = "Your Diva Nails Order Confirmation";
+        const subject = "Your Diva Order Confirmation";
         const htmlContent = `
           <div style="font-family: Arial, sans-serif; background: #fff; padding: 24px; border-radius: 8px; box-shadow: 0 2px 8px #eee;">
             <h2 style="color: #d63384;">Thank you for your order 💅!</h2>
@@ -604,7 +625,7 @@ export const createOrder = async (req, res) => {
               </tr>
             </table>
             <p>We’ll send you another email when your order ships.<br>
-            If you have any questions, reply to this email or contact us at <a href="mailto:support@divafactorynails.com">support@divafactorynails.com</a>.</p>
+            If you have any questions, reply to this email or contact us at <a href="mailto:admin@thedivafactory.com">admin@thedivafactory.com</a>.</p>
             <hr style="margin: 24px 0;">
             <p style="font-size: 12px; color: #888;">Diva Nails &copy; 2025</p>
           </div>
@@ -940,13 +961,26 @@ export const getFilteredOrders = async (req, res) => {
       limit,
       totalOrders,
       totalPages: Math.ceil(totalOrders / limit),
-      orders: orders.map((order) => ({
-        ...order,
-        customerEmail: order.user?.email || order.email,
-        // normalize DB snake_case to frontend camelCase
-        totalAmount: order.total_amount,
-        trackingCode: order.tracking_code,
-      })),
+      orders: orders.map((order) => {
+        const items = Array.isArray(order.order_item)
+          ? order.order_item.map((oi) => ({
+              productId: oi.product_id,
+              title: oi.product?.title ?? null,
+              quantity: Number(oi.quantity || 0),
+              unitPrice: Number(oi.price || 0),
+              lineTotal: Number(oi.price || 0) * Number(oi.quantity || 0),
+            }))
+          : [];
+
+        return {
+          ...order,
+          customerEmail: order.user?.email || order.email,
+          // normalize DB snake_case to frontend camelCase
+          items,
+          totalAmount: order.total_amount,
+          trackingCode: order.tracking_code,
+        };
+      }),
     });
   } catch (error) {
     console.error("❌ Error fetching orders:", error);

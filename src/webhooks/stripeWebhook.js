@@ -412,7 +412,7 @@ const processCheckoutSession = async (session) => {
   if (inserted && inserted.email) {
     // Send order confirmation to customer
     try {
-      const subject = "Your Diva Nails Order Confirmation";
+      const subject = "Your Diva Order Confirmation";
       const htmlContent = `<p>Thank you for your order 💅!<br>Order ID: <b>${inserted.id}</b><br>Total: $${inserted.total_amount?.toFixed(2) || "N/A"}</p>`;
       await sendEmail(inserted.email, subject, htmlContent);
       if (process.env.NODE_ENV !== 'production') console.log("✅ Order confirmation email sent to", inserted.email);
