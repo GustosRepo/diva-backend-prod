@@ -178,32 +178,77 @@ export const getAllProducts = async (req, res) => {
     };
     const categoryVariants = getCategorySlugVariants(rawCategorySlug);
 
-    let query = supabase
-      .from("product")
-      .select("id, title, description, price, best_seller, image, quantity, brand_segment, category_slug");
+    // --- Single-query: get paged data AND exact total count in one call ---
+    const buildBaseQuery = () => {
+      return supabase.from("product");
+    };
+
+    // --- Single-query: get paged data AND exact total count in one call ---
+    const baseSelect = "id, title, description, price, best_seller, image, quantity, brand_segment, category_slug";
+
+    let base = buildBaseQuery()
+      .select(baseSelect, { count: "exact" });
 
     if (categoryId) {
-      // Retained optional filter if some legacy products have category_id
-      query = query.eq("category_id", categoryId);
+      base = base.eq("category_id", categoryId);
     }
-    if (effectiveBrand) query = query.eq("brand_segment", effectiveBrand);
+    if (effectiveBrand) base = base.eq("brand_segment", effectiveBrand);
     if (rawCategorySlug) {
-      if (categoryVariants.length > 1) query = query.in("category_slug", categoryVariants);
-      else query = query.eq("category_slug", rawCategorySlug);
+      if (categoryVariants.length > 1) base = base.in("category_slug", categoryVariants);
+      else base = base.eq("category_slug", rawCategorySlug);
     }
-    if (minPrice) query = query.gte("price", parseFloat(minPrice));
-    if (maxPrice) query = query.lte("price", parseFloat(maxPrice));
-    if (search) query = query.ilike("title", `%${search}%`);
+    if (minPrice) base = base.gte("price", parseFloat(minPrice));
+    if (maxPrice) base = base.lte("price", parseFloat(maxPrice));
+    if (search) base = base.ilike("title", `%${search}%`);
 
-    if (sort === "price_asc") query = query.order("price", { ascending: true });
-    else if (sort === "price_desc") query = query.order("price", { ascending: false });
-    else query = query.order("created_at", { ascending: false });
+    // Apply sort preference (default newest)
+    const applySort = (q) => {
+      if (sort === "price_asc") return q.order("price", { ascending: true });
+      if (sort === "price_desc") return q.order("price", { ascending: false });
+      return q.order("created_at", { ascending: false });
+    };
 
-    query = query.range((page - 1) * limit, page * limit - 1);
+    let products, count;
+    try {
+      let sorted = applySort(base).range((page - 1) * limit, page * limit - 1);
+      const res = await sorted;
+      if (res.error) throw res.error;
+      products = res.data;
+      count = res.count;
+    } catch (e) {
+      // Fallback if created_at column doesn't exist (undefined_column 42703)
+      const msg = String(e && (e.message || e.error || e.toString()));
+      const code = e && (e.code || e.details || e.hint);
+      const missingCreatedAt = msg.includes('created_at') || code === '42703';
+      if (!missingCreatedAt) throw e;
 
-    const { data: products, error } = await query;
-    if (error) throw error;
+      // Rebuild base with same filters and count, but order by id instead
+      let retry = supabase
+        .from("product")
+        .select(baseSelect, { count: "exact" });
 
+      if (categoryId) retry = retry.eq("category_id", categoryId);
+      if (effectiveBrand) retry = retry.eq("brand_segment", effectiveBrand);
+      if (rawCategorySlug) {
+        if (categoryVariants.length > 1) retry = retry.in("category_slug", categoryVariants);
+        else retry = retry.eq("category_slug", rawCategorySlug);
+      }
+      if (minPrice) retry = retry.gte("price", parseFloat(minPrice));
+      if (maxPrice) retry = retry.lte("price", parseFloat(maxPrice));
+      if (search) retry = retry.ilike("title", `%${search}%`);
+
+      retry = retry.order("id", { ascending: false })
+                   .range((page - 1) * limit, page * limit - 1);
+
+      const res2 = await retry;
+      if (res2.error) throw res2.error;
+      products = res2.data;
+      count = res2.count;
+    }
+
+    const totalProducts = Number.isFinite(count) ? Number(count) : 0;
+
+    // Keep optional post-filter (synonyms/variants safety) for the returned page only
     let filtered = products || [];
     let postFilterApplied = false;
     if (rawCategorySlug && categoryVariants.length) {
@@ -214,13 +259,11 @@ export const getAllProducts = async (req, res) => {
       if (filtered.length !== before) postFilterApplied = true;
     }
 
-    const totalProducts = filtered.length;
-
     res.json({
       page,
       limit,
       totalProducts,
-      totalPages: Math.ceil(totalProducts / limit),
+      totalPages: Math.max(1, Math.ceil(totalProducts / limit)),
       products: filtered.map(mapProductRow),
       _debug: {
         rawCategorySlug,
