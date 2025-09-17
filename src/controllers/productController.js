@@ -135,6 +135,7 @@ export const getAllProducts = async (req, res) => {
       minPrice,
       maxPrice,
       search,
+      q,
       sort,
       page = 1,
       limit = 10,
@@ -153,6 +154,10 @@ export const getAllProducts = async (req, res) => {
 
     const effectiveBrand = (brand_segment || brandSegment || '').trim().toLowerCase();
     const rawCategorySlug = (categorySlug || category_slug || qsCategorySlug || '').trim().toLowerCase();
+
+    // Normalize search term and escape commas for Supabase .or() syntax
+    const qRaw = (q || search || '').trim();
+    const qEsc = qRaw.replace(/,/g, '\\,');
 
     const CATEGORY_SYNONYMS = {
       'vinyl-figures': ['vinyl'],
@@ -199,7 +204,7 @@ export const getAllProducts = async (req, res) => {
     }
     if (minPrice) base = base.gte("price", parseFloat(minPrice));
     if (maxPrice) base = base.lte("price", parseFloat(maxPrice));
-    if (search) base = base.ilike("title", `%${search}%`);
+    if (qRaw) base = base.or(`title.ilike.%${qEsc}%,description.ilike.%${qEsc}%`);
 
     // Apply sort preference (default newest)
     const applySort = (q) => {
@@ -235,7 +240,7 @@ export const getAllProducts = async (req, res) => {
       }
       if (minPrice) retry = retry.gte("price", parseFloat(minPrice));
       if (maxPrice) retry = retry.lte("price", parseFloat(maxPrice));
-      if (search) retry = retry.ilike("title", `%${search}%`);
+      if (qRaw) retry = retry.or(`title.ilike.%${qEsc}%,description.ilike.%${qEsc}%`);
 
       retry = retry.order("id", { ascending: false })
                    .range((page - 1) * limit, page * limit - 1);
