@@ -27,6 +27,10 @@ export const decrementProductQuantity = async (productId, qty = 1) => {
         p_qty: pQty,
       });
       if (error) {
+        // If RPC returns custom error for insufficient stock, propagate it
+        if (error.message && error.message.toLowerCase().includes("insufficient")) {
+          return { data: null, error: error };
+        }
         console.warn("⚠️ decrement_product_quantity RPC returned error:", error);
       } else {
         return { data, error: null };
@@ -48,7 +52,13 @@ export const decrementProductQuantity = async (productId, qty = 1) => {
     }
 
     const currentQty = Number.isFinite(Number(product?.quantity)) ? Number(product.quantity) : 0;
-    const newQty = Math.max(0, currentQty - pQty);
+    if (currentQty < pQty) {
+      // Prevent decrement below zero
+      const err = new Error("Insufficient stock: cannot decrement below zero");
+      err.code = "INSUFFICIENT_STOCK";
+      return { data: null, error: err };
+    }
+    const newQty = currentQty - pQty;
 
     const { data: updated, error: updateErr } = await supabase
       .from("product")
