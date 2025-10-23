@@ -15,6 +15,10 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 // Safe frontend base URL fallback
 const BASE_CLIENT_URL = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:3000";
 
+// 🔧 Auto Toys Promo configuration (env with defaults)
+const PROMO_TOYS_RATE = Number(process.env.PROMO_TOYS_RATE || 10); // percent
+const PROMO_TOYS_END_ISO = process.env.PROMO_TOYS_END_ISO || "2025-11-01T00:00:00Z";
+
 
 // 🔐 Decode user from JWT (if logged in)
 const getUserFromToken = (req) => {
@@ -41,9 +45,71 @@ router.post("/create-checkout-session", async (req, res) => {
 
     // Per-request promo code container (avoid cross-request leakage)
     let promoCodeId = null;
+    let providedDiscountCode = "";
+    try {
+      const rawCode = (req.body?.discountCode ?? req.body?.metadata?.discountCode ?? "");
+      if (typeof rawCode === "string") {
+        providedDiscountCode = rawCode.trim();
+      }
+    } catch (_) {}
 
-    // 🧮 If user has 100+ points, generate/ensure a single-use promo
-    if (user && user.userId && user.userId !== "guest") {
+    // 1) If client provided a discount code, validate with Stripe first
+    if (providedDiscountCode) {
+      try {
+        const list = await stripe.promotionCodes.list({ code: providedDiscountCode, limit: 1 });
+        const found = (list?.data || []).find(p => {
+          const codeMatches = (p?.code || "").toLowerCase() === providedDiscountCode.toLowerCase();
+          return codeMatches && p?.active === true;
+        });
+        if (found) {
+          promoCodeId = found.id;
+          if (process.env.NODE_ENV !== 'production') console.log(`✅ Applying provided discount code '${providedDiscountCode}' -> promo ${promoCodeId}`);
+        } else {
+          if (process.env.NODE_ENV !== 'production') console.warn(`⚠️ Provided discount code '${providedDiscountCode}' not found or inactive. Proceeding without it.`);
+        }
+      } catch (e) {
+        if (process.env.NODE_ENV !== 'production') console.warn(`⚠️ Stripe validation failed for code '${providedDiscountCode}':`, e?.message || e);
+      }
+    }
+
+    // Loyalty fallback will be evaluated later after computing auto toys discount applicability
+
+    if (!items || items.length === 0) {
+      return res.status(400).json({ message: "No items provided" });
+    }
+
+    // Determine auto toys discount window
+    const promoEndMs = Date.parse(PROMO_TOYS_END_ISO);
+    const isToysPromoWindowActive = Number.isFinite(promoEndMs) && Date.now() < promoEndMs && PROMO_TOYS_RATE > 0;
+
+    // Identify toy items server-side by brand_segment
+    let toyIdSet = new Set();
+    try {
+      const ids = (Array.isArray(items) ? items : []).map(it => it.id).filter(Boolean);
+      if (ids.length) {
+        const { data: prods, error: prodErr } = await supabase
+          .from("product")
+          .select("id, brand_segment")
+          .in("id", ids);
+        if (prodErr) {
+          if (process.env.NODE_ENV !== 'production') console.warn("⚠️ Could not fetch products for brand_segment:", prodErr?.message || prodErr);
+        } else if (Array.isArray(prods)) {
+          toyIdSet = new Set(
+            prods
+              .filter(p => (p?.brand_segment || "").toLowerCase() === "toys")
+              .map(p => p.id)
+          );
+        }
+      }
+    } catch (e) {
+      if (process.env.NODE_ENV !== 'production') console.warn("⚠️ Error determining toy items:", e?.message || e);
+    }
+
+    // Precedence: manual code > auto toys > loyalty
+    const willApplyAutoToys = isToysPromoWindowActive && toyIdSet.size > 0 && !promoCodeId;
+
+    // 2) Loyalty fallback: only if no manual code and no auto toys discount
+    if (!promoCodeId && !willApplyAutoToys && user && user.userId && user.userId !== "guest") {
       try {
         const { data: dbUser, error: userError } = await supabase
           .from("user")
@@ -53,49 +119,56 @@ router.post("/create-checkout-session", async (req, res) => {
         if (userError) throw userError;
         if (dbUser && (dbUser.points || 0) >= 100) {
           const couponCode = `DIVA-${user.userId.slice(0, 6).toUpperCase()}`;
-          // Look up an existing active promotion code with this code
-            const existing = await stripe.promotionCodes.list({ code: couponCode, limit: 1 });
-            const activePromo = existing.data.find(p => p.code === couponCode && p.active && !p.restrictions?.ends_at);
-            if (activePromo) {
-              promoCodeId = activePromo.id;
-              if (process.env.NODE_ENV !== 'production') console.log("🎟️ Reusing active promo code:", couponCode);
-            } else {
-              const coupon = await stripe.coupons.create({ percent_off: 10, duration: "once" });
-              const promo = await stripe.promotionCodes.create({ code: couponCode, coupon: coupon.id, max_redemptions: 1 });
-              promoCodeId = promo.id;
-              const { error: updateError } = await supabase
-                .from("user")
-                .update({ points: (dbUser.points || 0) - 100 })
-                .eq("id", user.userId);
-              if (updateError) throw updateError;
-              if (process.env.NODE_ENV !== 'production') console.log("🎁 Created new promo & deducted 100 points:", couponCode);
-            }
+          const existing = await stripe.promotionCodes.list({ code: couponCode, limit: 1 });
+          const activePromo = existing.data.find(p => (p.code || "").toLowerCase() === couponCode.toLowerCase() && p.active && !p.restrictions?.ends_at);
+          if (activePromo) {
+            promoCodeId = activePromo.id;
+            if (process.env.NODE_ENV !== 'production') console.log("🎟️ Reusing active loyalty promo:", couponCode);
+          } else {
+            const coupon = await stripe.coupons.create({ percent_off: 10, duration: "once" });
+            const promo = await stripe.promotionCodes.create({ code: couponCode, coupon: coupon.id, max_redemptions: 1 });
+            promoCodeId = promo.id;
+            const { error: updateError } = await supabase
+              .from("user")
+              .update({ points: (dbUser.points || 0) - 100 })
+              .eq("id", user.userId);
+            if (updateError) throw updateError;
+            if (process.env.NODE_ENV !== 'production') console.log("🎁 Created new loyalty promo & deducted 100 points:", couponCode);
+          }
         }
       } catch (e) {
         if (process.env.NODE_ENV !== 'production') console.error("❌ Promo code generation error (non-fatal):", e?.message || e);
       }
     }
 
-    if (!items || items.length === 0) {
-      return res.status(400).json({ message: "No items provided" });
-    }
-
-    const productLineItems = items.map((item) => ({
-      price_data: {
-        currency: "usd",
-        product_data: {
-          name: item.title || item.name || "Item",
-          images: [
-            item.image?.startsWith("http")
-              ? item.image
-              : `${BASE_CLIENT_URL}${item.image}`,
-          ].filter(Boolean),
+    // Build line items with potential auto toys discount
+    let promoToysCents = 0; // total discounted cents across all toy items
+    const productLineItems = items.map((item) => {
+      const quantity = Number(item.quantity) || 1;
+      const baseCents = Math.round(Number(item.price) * 100);
+      let unit_amount = baseCents;
+      if (willApplyAutoToys && item.id && toyIdSet.has(item.id)) {
+        const discounted = Math.round(baseCents * (1 - PROMO_TOYS_RATE / 100));
+        promoToysCents += (baseCents - discounted) * quantity;
+        unit_amount = discounted;
+      }
+      return {
+        price_data: {
+          currency: "usd",
+          product_data: {
+            name: item.title || item.name || "Item",
+            images: [
+              item.image?.startsWith("http")
+                ? item.image
+                : `${BASE_CLIENT_URL}${item.image}`,
+            ].filter(Boolean),
+          },
+          unit_amount,
+          tax_behavior: "exclusive",
         },
-        unit_amount: Math.round(Number(item.price) * 100),
-        tax_behavior: "exclusive",
-      },
-      quantity: Number(item.quantity) || 1,
-    }));
+        quantity,
+      };
+    });
 
     // If client provided shipment + selected rate, fetch shipment to validate & extract rate
     let selectedRate = null;
@@ -190,6 +263,11 @@ router.post("/create-checkout-session", async (req, res) => {
       shipping_rate_service: selectedRate.service || "",
       ship_from_email: process.env.SHIP_FROM_EMAIL || "",
       ship_from_phone: process.env.SHIP_FROM_PHONE || "",
+      ...(providedDiscountCode ? { discountCode: providedDiscountCode } : {}),
+      // Auto toys promo observability
+      promo_toys_applied: willApplyAutoToys ? "1" : "0",
+      promo_toys_rate: String(PROMO_TOYS_RATE),
+      promo_toys_cents: String(promoToysCents),
       ...(clientMetadata || {}),
     };
 
@@ -216,6 +294,10 @@ router.post("/create-checkout-session", async (req, res) => {
     };
 
     // Attempt creation with discount if present, retry once w/o on coupon errors
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`🧮 Auto toys promo: ${willApplyAutoToys ? 'APPLIED' : 'SKIPPED'} | total discount cents=${promoToysCents}`);
+    }
+
     let session;
     if (promoCodeId) {
       try {
@@ -223,14 +305,14 @@ router.post("/create-checkout-session", async (req, res) => {
           ...baseSessionPayload,
           discounts: [{ promotion_code: promoCodeId }],
         });
-        if (process.env.NODE_ENV !== 'production') console.log("✅ Stripe session created with promo:", session.id);
+        if (process.env.NODE_ENV !== 'production') console.log("✅ Stripe session created with promo:", session.id, "discounts applied = yes");
       } catch (err) {
         const code = err?.code || err?.raw?.code;
         if (code === "coupon_expired" || code === "resource_missing" || code === "invalid_request_error") {
           if (process.env.NODE_ENV !== 'production') console.warn(`⚠️ Promo code invalid (${code}). Retrying without discount.`);
           try {
             session = await stripe.checkout.sessions.create(baseSessionPayload);
-            if (process.env.NODE_ENV !== 'production') console.log("✅ Stripe session created without promo after retry:", session.id);
+            if (process.env.NODE_ENV !== 'production') console.log("✅ Stripe session created without promo after retry:", session.id, "discounts applied = no");
           } catch (retryErr) {
             if (process.env.NODE_ENV !== 'production') console.error("❌ Stripe retry failed:", retryErr);
             return res.status(500).json({ message: "Failed to create checkout session", error: retryErr.message });
@@ -242,7 +324,7 @@ router.post("/create-checkout-session", async (req, res) => {
       }
     } else {
       session = await stripe.checkout.sessions.create(baseSessionPayload);
-      if (process.env.NODE_ENV !== 'production') console.log("✅ Stripe session created (no promo):", session.id);
+      if (process.env.NODE_ENV !== 'production') console.log("✅ Stripe session created (no promo):", session.id, "discounts applied = no");
     }
 
     return res.json({ url: session.url, shipping: selectedRate, shippoShipmentId: effectiveShipmentId });
